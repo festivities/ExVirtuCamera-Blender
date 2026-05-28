@@ -1,6 +1,6 @@
 schema_version = "1.0.0"
 
-id = "virtucamera_blender"
+id = "exvirtucamera_blender"
 version = "1.3.0"
 name = "ExVirtuCamera"
 tagline = "Stream your Blender viewport to the VirtuCamera mobile app"
