@@ -108,17 +108,17 @@ class VirtuCameraBlender(VCBase):
                 offset_value_y, zoom_factor,
             )
             x = int(
-                region.x + (region.width - width) * 0.5
+                (region.width - width) * 0.5
                 + region.width * offset_factor_x
             )
             y = int(
-                region.y + (region.height - height) * 0.5
+                (region.height - height) * 0.5
                 + region.height * offset_factor_y
             )
             width = min(width, region.width)
             height = min(height, region.height)
-            x = min(max(x, region.x), region.x + region.width - width)
-            y = min(max(y, region.y), region.y + region.height - height)
+            x = min(max(x, 0), region.width - width)
+            y = min(max(y, 0), region.height - height)
             self.last_rect = (x, y, width, height)
 
         return self.last_rect
@@ -265,11 +265,20 @@ class VirtuCameraBlender(VCBase):
     def capture_will_start(self, vcserver):
         (x, y, width, height) = self.get_view_camera_rect()
         shm_size = width * height * 4
-        shm_name = f"vc_blender_{os.getpid()}"
+        if not hasattr(self, '_shm_counter'):
+            self._shm_counter = 0
+        self._shm_counter += 1
+        shm_name = f"vc_blender_{os.getpid()}_{self._shm_counter}"
+        try:
+            _old = SharedMemory(name=shm_name)
+            _old.close()
+            _old.unlink()
+        except Exception:
+            pass
+            
         if self._shm is not None:
             try:
                 self._shm.close()
-                self._shm.unlink()
             except Exception:
                 pass
         self._shm = SharedMemory(name=shm_name, create=True, size=shm_size)
@@ -280,15 +289,22 @@ class VirtuCameraBlender(VCBase):
             vcserver.CAPMODE_BUFFER, vcserver.CAPFORMAT_UBYTE_BGRA,
         )
         vcserver.set_vertical_flip(True)
-        if not hasattr(self, '_draw_handle') or not self._draw_handle:
-            self._draw_handle = bpy.types.SpaceView3D.draw_handler_add(
-                self._draw_handler, (), 'WINDOW', 'POST_PIXEL'
-            )
+
+        # Create offscreen buffer for rendering
+        self._offscreen = gpu.types.GPUOffScreen(width, height)
+        self._capture_width = width
+        self._capture_height = height
+
+        # Start the capture timer
+        if not hasattr(self, '_capture_timer_running') or not self._capture_timer_running:
+            self._capture_timer_running = True
+            bpy.app.timers.register(self._capture_timer, first_interval=0.0)
 
     def capture_did_end(self, vcserver):
-        if hasattr(self, '_draw_handle') and self._draw_handle:
-            bpy.types.SpaceView3D.draw_handler_remove(self._draw_handle, 'WINDOW')
-            self._draw_handle = None
+        self._capture_timer_running = False
+        if hasattr(self, '_offscreen') and self._offscreen is not None:
+            self._offscreen.free()
+            self._offscreen = None
         if self._shm is not None:
             try:
                 self._shm.close()
@@ -298,34 +314,93 @@ class VirtuCameraBlender(VCBase):
             self._shm = None
             self._shm_name = None
 
-    def _draw_handler(self):
+    def _capture_timer(self):
         vcserver = _server
-        if vcserver is None or self._shm is None:
-            return
-        (x, y, width, height) = self.get_view_camera_rect()
-        if width != vcserver.capture_width or height != vcserver.capture_height:
-            vcserver.set_capture_resolution(width, height)
-            shm_size = width * height * 4
-            shm_name = f"vc_blender_{os.getpid()}"
-            try:
-                self._shm.close()
-                self._shm.unlink()
-            except Exception:
-                pass
-            try:
-                self._shm = SharedMemory(name=shm_name, create=True, size=shm_size)
-                self._shm_name = shm_name
-                vcserver.set_shm_name(shm_name)
-            except Exception:
-                self._shm = None
-                return
+        if vcserver is None or self._shm is None or not self._capture_timer_running:
+            self._capture_timer_running = False
+            return None  # Stop timer
 
         try:
-            fb = gpu.state.active_framebuffer_get()
-            buffer = fb.read_color(x, y, width, height, 4, 0, 'UBYTE')
-            self._shm.buf[:] = bytes(buffer)
+            (x, y, width, height) = self.get_view_camera_rect()
+
+            # Handle resolution changes
+            if width != self._capture_width or height != self._capture_height:
+                vcserver.set_capture_resolution(width, height)
+                shm_size = width * height * 4
+                if not hasattr(self, '_shm_counter'):
+                    self._shm_counter = 0
+                self._shm_counter += 1
+                shm_name = f"vc_blender_{os.getpid()}_{self._shm_counter}"
+                try:
+                    _old = SharedMemory(name=shm_name)
+                    _old.close()
+                    _old.unlink()
+                except Exception:
+                    pass
+                try:
+                    if self._shm is not None:
+                        self._shm.close()
+                except Exception:
+                    pass
+                try:
+                    self._shm = SharedMemory(
+                        name=shm_name, create=True, size=shm_size,
+                    )
+                    self._shm_name = shm_name
+                    vcserver.set_shm_name(shm_name)
+                except Exception:
+                    self._shm = None
+                    return None
+
+                # Recreate offscreen buffer
+                if self._offscreen is not None:
+                    self._offscreen.free()
+                self._offscreen = gpu.types.GPUOffScreen(width, height)
+                self._capture_width = width
+                self._capture_height = height
+
+            # Find the 3D viewport
+            area, region = self._find_3d_region()
+            if area is None or region is None:
+                return 1.0 / 30.0
+
+            space = area.spaces.active
+            r3d = space.region_3d
+
+            # Render viewport into offscreen buffer
+            import numpy as np
+            with self._offscreen.bind():
+                self._offscreen.draw_view3d(
+                    bpy.context.scene,
+                    bpy.context.view_layer,
+                    space,
+                    region,
+                    r3d.view_matrix,
+                    r3d.window_matrix,
+                )
+                fb = gpu.state.active_framebuffer_get()
+                buffer = fb.read_color(0, 0, width, height, 4, 0, 'UBYTE')
+                raw = bytes(buffer)
+
+            arr = np.frombuffer(raw, dtype=np.uint8).reshape(-1, 4)
+            bgra = arr.copy()
+            bgra[:, 0] = arr[:, 2]  # B = old R
+            bgra[:, 2] = arr[:, 0]  # R = old B
+            bgra[:, 3] = 255        # Force opaque
+            self._shm.buf[:] = bgra.tobytes()
+
         except Exception:
             pass
+
+        # Tag viewport for redraw to keep it alive
+        try:
+            area, _ = self._find_3d_region()
+            if area:
+                area.tag_redraw()
+        except Exception:
+            pass
+
+        return 1.0 / 30.0  # ~30 FPS capture rate
 
     def get_capture_buffer(self, vcserver, camera_name):
         return None

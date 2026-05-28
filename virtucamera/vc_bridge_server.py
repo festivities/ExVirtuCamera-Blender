@@ -1,8 +1,3 @@
-# PyVirtuCamera - Python 3.9 Bridge Server
-# Runs inside a Python 3.9 subprocess to host the real vc_core.pyd.
-# Communicates with the Blender-side wrapper via local TCP sockets
-# and shares frame data via multiprocessing shared memory.
-
 import os
 import sys
 import json
@@ -18,9 +13,22 @@ from multiprocessing.shared_memory import SharedMemory
 if __name__ == "__main__" and not __package__:
     _this_dir = os.path.dirname(os.path.abspath(__file__))
     _parent_dir = os.path.dirname(_this_dir)
-    if _parent_dir not in sys.path:
-        sys.path.insert(0, _parent_dir)
+    sys.path.insert(0, _parent_dir)
     __package__ = "virtucamera"
+
+# Redirect all stderr/stdout to catch multiprocessing crashes
+_log_file = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "bridge_sys.log"), "a", buffering=1)
+sys.stdout = _log_file
+sys.stderr = _log_file
+
+try:
+    import _sre
+    import sre_compile
+    print(f"Bridge _sre.MAGIC: {_sre.MAGIC}", flush=True)
+    print(f"Bridge sre_compile.MAGIC: {sre_compile.MAGIC}", flush=True)
+    import re
+except Exception as e:
+    print(f"Bridge RE ERROR: {e}", flush=True)
 
 from .vc_base import VCBase
 
@@ -183,18 +191,76 @@ class BridgeVCBase(VCBase):
 
     def capture_will_start(self, vcserver):
         self._invoke_callback("capture_will_start")
+        self._log("capture_will_start callback completed, shm=%s" % (
+            self._server._shm.name if self._server._shm else "None"))
 
     def capture_did_end(self, vcserver):
+        self._log("capture_did_end called")
         self._invoke_callback("capture_did_end")
 
+    def _log(self, msg):
+        import datetime
+        try:
+            log_path = os.path.join(
+                os.path.dirname(os.path.abspath(__file__)),
+                "bridge_debug.log",
+            )
+            with open(log_path, "a") as f:
+                ts = datetime.datetime.now().strftime("%H:%M:%S.%f")
+                f.write(f"[{ts}] {msg}\n")
+        except Exception:
+            pass
+
+    def __getattribute__(self, name):
+        if not name.startswith('_'):
+            try:
+                object.__getattribute__(self, '_log')(f"Attr accessed: {name}")
+            except Exception:
+                pass
+        return object.__getattribute__(self, name)
+
     def get_capture_buffer(self, vcserver, camera_name):
-        self._invoke_callback("get_capture_buffer", camera_name)
         if self._server._shm is not None:
-            return self._server._shm.buf
+            buf = self._server._shm.buf
+            
+            import ctypes
+            # Get the memory address of the shared memory buffer
+            buf_address = ctypes.addressof(ctypes.c_char.from_buffer(buf))
+            
+            # Wrap the memoryview in a ctypes array without copying
+            # ctypes arrays implement the C buffer protocol (bytes-like object)
+            # and allow us to dynamically add the .ptr attribute the C++ extension needs
+            arr = (ctypes.c_char * len(buf)).from_buffer(buf)
+            arr.ptr = buf_address
+            
+            return arr
+            
+        self._log("get_capture_buffer: shm is None!")
         return None
 
     def get_capture_pointer(self, vcserver, camera_name):
-        return self._invoke_callback("get_capture_pointer", camera_name)
+        if self._server._shm is not None:
+            import ctypes
+            buf = self._server._shm.buf
+            # Cache the ctypes array so it isn't garbage collected
+            # while the C++ extension reads from the pointer
+            if not hasattr(self, '_cached_c_array') or self._cached_c_array is None:
+                self._cached_c_array = (ctypes.c_char * len(buf)).from_buffer(buf)
+            ptr = ctypes.addressof(self._cached_c_array)
+            # Log occasionally (every 100 calls)
+            if not hasattr(self, '_ptr_call_count'):
+                self._ptr_call_count = 0
+            self._ptr_call_count += 1
+            if self._ptr_call_count <= 5 or self._ptr_call_count % 100 == 0:
+                nz = sum(1 for b in bytes(buf[:100]) if b != 0)
+                self._log(
+                    f"get_capture_pointer #{self._ptr_call_count}: "
+                    f"ptr=0x{ptr:016X}, buf_size={len(buf)}, "
+                    f"first4={list(bytes(buf[:4]))}, first100_nz={nz}"
+                )
+            return ptr
+        self._log("get_capture_pointer: shm is None!")
+        return 0
 
     def look_through_camera(self, vcserver, camera_name):
         self._invoke_callback("look_through_camera", camera_name)
@@ -267,8 +333,9 @@ class BridgeServer:
             self._vcserver = _RealVCServer(
                 platform="Blender",
                 plugin_version=(1, 1, 0),
+                python_executable=sys.executable,
                 event_mode=0,
-                vcbase=self._bridge_vcbase,
+                vcbase=self._bridge_vcbase
             )
             print("Bridge: VCServer initialized", flush=True)
         else:
@@ -359,11 +426,19 @@ class BridgeServer:
         self._respond("stop_serving", ok=True)
 
     def _cmd_set_capture_resolution(self, msg):
+        self._bridge_vcbase._log(
+            f"set_capture_resolution: {msg['width']}x{msg['height']}")
         self._vcserver.set_capture_resolution(msg["width"], msg["height"])
         self._respond("set_capture_resolution", ok=True)
 
     def _cmd_set_capture_mode(self, msg):
+        self._bridge_vcbase._log(
+            f"set_capture_mode: mode={msg['mode']}, pixel_format={msg['pixel_format']}")
         self._vcserver.set_capture_mode(msg["mode"], msg["pixel_format"])
+        # Log what the C++ extension actually has after setting
+        vs = self._vcserver
+        self._bridge_vcbase._log(
+            f"  -> C++ capture_mode={vs.capture_mode}, capture_format={vs.capture_format}")
         self._respond("set_capture_mode", ok=True)
 
     def _cmd_set_vertical_flip(self, msg):
@@ -386,12 +461,14 @@ class BridgeServer:
             except Exception:
                 pass
             self._shm = None
+        # Invalidate cached ctypes pointer
+        if self._bridge_vcbase is not None:
+            self._bridge_vcbase._cached_c_array = None
         if shm_name:
             self._shm = SharedMemory(name=shm_name)
         self._respond("set_shm_name", ok=True)
 
     def _cmd_exec_events(self, msg):
-        self._vcserver.execute_pending_events()
         vs = self._vcserver
         self._respond(
             "exec_events",

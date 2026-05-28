@@ -115,7 +115,13 @@ class VCServer:
 
         addon_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         env = os.environ.copy()
-        env["PYTHONPATH"] = addon_dir + os.pathsep + env.get("PYTHONPATH", "")
+        
+        # Scrub Blender's python paths to prevent SRE module mismatches
+        if "PYTHONHOME" in env:
+            del env["PYTHONHOME"]
+        
+        # Only keep our addon dir in PYTHONPATH
+        env["PYTHONPATH"] = addon_dir
 
         self._proc = subprocess.Popen(
             py_args + ["-m", "virtucamera.vc_bridge_server",
@@ -272,10 +278,11 @@ class VCServer:
         result = None
         error = None
         try:
-            method = getattr(self._vcbase, cb_name)
-            result = method(self, *args, **kwargs)
-            if cb_name == "get_capture_buffer":
+            if cb_name in ("get_capture_buffer", "get_capture_pointer"):
                 result = None
+            else:
+                method = getattr(self._vcbase, cb_name)
+                result = method(self, *args, **kwargs)
         except Exception:
             error = traceback.format_exc()
         try:
@@ -316,26 +323,10 @@ class VCServer:
 
     def execute_pending_events(self):
         try:
-            _send_msg(self._cmd_sock, {"cmd": "exec_events"})
-            
-            resp = None
-            while True:
-                with self._callback_lock:
-                    queued = list(self._callback_queue)
-                    self._callback_queue.clear()
-                
-                for msg in queued:
-                    self._process_callback(msg)
-                    
-                r, w, x = select.select([self._cmd_sock], [], [], 0.01)
-                if self._cmd_sock in r:
-                    resp = _recv_msg(self._cmd_sock)
-                    break
+            resp = self._send_cmd("exec_events")
+            self._apply_props(resp)
         except (ConnectionError, OSError, RuntimeError):
             self._is_event_loop_running = False
-            return
-
-        self._apply_props(resp)
 
         with self._callback_lock:
             queued = list(self._callback_queue)
