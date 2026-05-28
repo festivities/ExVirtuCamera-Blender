@@ -1,6 +1,7 @@
 import os
 import sys
 import math
+import time
 import traceback
 
 import bpy
@@ -269,8 +270,16 @@ class VirtuCameraBlender(VCBase):
         # Align resolution to multiples of 16 to prevent stride mismatch
         width = (width // 16) * 16
         height = (height // 16) * 16
-        
-        shm_size = width * height * 4
+
+        # Allocate for the maximum possible capture area so we never need
+        # to reallocate during zoom/pan.
+        import mss as _mss_mod
+        with _mss_mod.mss() as _sct:
+            _mon = _sct.monitors[0]
+            max_w = ((_mon["width"] + 15) // 16) * 16
+            max_h = ((_mon["height"] + 15) // 16) * 16
+        shm_size = max_w * max_h * 4
+        self._shm_max_size = shm_size
         if not hasattr(self, '_shm_counter'):
             self._shm_counter = 0
         self._shm_counter += 1
@@ -296,10 +305,10 @@ class VirtuCameraBlender(VCBase):
         )
         vcserver.set_vertical_flip(False)
 
-        import mss
-        self._mss = mss.mss()
+        self._mss = _mss_mod.mss()
         self._capture_width = width
         self._capture_height = height
+        self._last_res_change_time = time.monotonic()
 
         # Start the capture timer
         if not hasattr(self, '_capture_timer_running') or not self._capture_timer_running:
@@ -348,35 +357,17 @@ class VirtuCameraBlender(VCBase):
 
             # Handle resolution changes
             if width != self._capture_width or height != self._capture_height:
-                vcserver.set_capture_resolution(width, height)
-                shm_size = width * height * 4
-                if not hasattr(self, '_shm_counter'):
-                    self._shm_counter = 0
-                self._shm_counter += 1
-                shm_name = f"vc_blender_{os.getpid()}_{self._shm_counter}"
-                try:
-                    _old = SharedMemory(name=shm_name)
-                    _old.close()
-                    _old.unlink()
-                except Exception:
-                    pass
-                try:
-                    if self._shm is not None:
-                        self._shm.close()
-                except Exception:
-                    pass
-                try:
-                    self._shm = SharedMemory(
-                        name=shm_name, create=True, size=shm_size,
-                    )
-                    self._shm_name = shm_name
-                    vcserver.set_shm_name(shm_name)
-                except Exception:
-                    self._shm = None
-                    return None
-
-                self._capture_width = width
-                self._capture_height = height
+                # Debounce: only send resolution updates at most every 200ms.
+                now = time.monotonic()
+                if now - self._last_res_change_time >= 0.2:
+                    self._last_res_change_time = now
+                    self._capture_width = width
+                    self._capture_height = height
+                    vcserver.set_capture_resolution(width, height)
+                else:
+                    # Use the old (still-valid) resolution for this frame.
+                    width = self._capture_width
+                    height = self._capture_height
 
             # Find the 3D viewport
             area, region = self._find_3d_region()
@@ -422,7 +413,8 @@ class VirtuCameraBlender(VCBase):
 
             # Grab screen region with mss
             sct_img = self._mss.grab(monitor)
-            self._shm.buf[:] = sct_img.bgra
+            frame_size = width * height * 4
+            self._shm.buf[:frame_size] = sct_img.bgra
 
         except Exception as e:
             import traceback

@@ -227,6 +227,12 @@ class BridgeVCBase(VCBase):
     def get_capture_buffer(self, vcserver, camera_name):
         if self._server._shm is not None:
             buf = self._server._shm.buf
+            # Only expose the portion matching the current capture resolution.
+            vs = self._server._vcserver
+            frame_size = vs.capture_width * vs.capture_height * 4
+            if frame_size <= 0 or frame_size > len(buf):
+                return None
+            buf = buf[:frame_size]
             
             import ctypes
             # Get the memory address of the shared memory buffer
@@ -460,15 +466,15 @@ class BridgeServer:
 
     def _cmd_set_shm_name(self, msg):
         shm_name = msg.get("shm_name")
+        # Clear cached ctypes array FIRST to release the buffer reference.
+        if self._bridge_vcbase is not None:
+            self._bridge_vcbase._cached_c_array = None
         if self._shm is not None:
             try:
                 self._shm.close()
             except Exception:
                 pass
             self._shm = None
-        # Invalidate cached ctypes pointer
-        if self._bridge_vcbase is not None:
-            self._bridge_vcbase._cached_c_array = None
         if shm_name:
             self._shm = SharedMemory(name=shm_name)
         self._respond("set_shm_name", ok=True)

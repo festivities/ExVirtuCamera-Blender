@@ -1,7 +1,4 @@
-.vscode/
-.opencode/
 data/
 __pycache__/
 *.zip
 *.log
-AGENTS.md

@@ -1,0 +1,22 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "ida-pro-mcp": {
+      "type": "remote",
+      "url": "http://127.0.0.1:13337/mcp",
+      "enabled": true
+    },
+    "blender-mcp": {
+      "type": "local",
+      "command": ["D:\\dev\\projects\\blender_mcp\\mcp\\venv\\Scripts\\blender-mcp.exe"],
+      "enabled": true,
+      "environment": {}
+    },
+    "WireMCP": {
+      "type": "local",
+      "command": ["cmd", "/c", "cd", "/d", "D:\\dev\\projects\\WireMCP", "&&", "node", "index.js"],
+      "enabled": true,
+      "environment": {}
+    }
+  }
+}
