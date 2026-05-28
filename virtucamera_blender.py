@@ -151,11 +151,11 @@ class VirtuCameraBlender(VCBase):
         return bpy.context.scene.render.fps
 
     def set_frame(self, vcserver, frame):
-        bpy.context.scene.frame_current = frame
+        bpy.context.scene.frame_current = int(frame)
 
     def set_playback_range(self, vcserver, start, end):
-        bpy.context.scene.frame_start = start
-        bpy.context.scene.frame_end = end
+        bpy.context.scene.frame_start = int(start)
+        bpy.context.scene.frame_end = int(end)
 
     def start_playback(self, vcserver, forward):
         if not bpy.context.screen.is_animation_playing:
@@ -317,6 +317,9 @@ class VirtuCameraBlender(VCBase):
         if self._shm is not None:
             try:
                 self._shm.close()
+            except Exception:
+                pass
+            try:
                 self._shm.unlink()
             except Exception:
                 pass
@@ -328,6 +331,9 @@ class VirtuCameraBlender(VCBase):
         if vcserver is None or self._shm is None or not self._capture_timer_running:
             self._capture_timer_running = False
             return None  # Stop timer
+        if not vcserver.bridge_alive:
+            self._capture_timer_running = False
+            return None  # Bridge crashed — stop capture timer
 
         try:
             (x, y, width, height) = self.get_view_camera_rect()
@@ -511,6 +517,19 @@ class VirtuCameraBlender(VCBase):
 def timer_function():
     if _server is None:
         return None
+    # Detect bridge crash and update UI state so the user knows
+    if not _server.bridge_alive:
+        _server._is_serving = False
+        _server._is_connected = False
+        _server._is_capturing = False
+        vcbase = _server._vcbase
+        if vcbase is not None:
+            vcbase._capture_timer_running = False
+        try:
+            bpy.ops.view3d.virtucamera_redraw()
+        except Exception:
+            pass
+        return None
     _server.execute_pending_events()
     if _server.is_serving:
         return 0.0
@@ -561,6 +580,19 @@ class VIEW3D_OT_virtucamera_start(bpy.types.Operator):
     def execute(self, context):
         if _server is None:
             return {'CANCELLED'}
+        # Auto-recover from a bridge crash without requiring a Blender restart
+        if not _server.bridge_alive:
+            vcbase = _server._vcbase
+            if vcbase is not None:
+                try:
+                    vcbase.capture_did_end(_server)
+                except Exception:
+                    pass
+            try:
+                _server.restart_bridge()
+            except Exception as e:
+                self.report({'ERROR'}, f"VirtuCamera bridge recovery failed: {e}")
+                return {'CANCELLED'}
         state = context.scene.virtucamera
         prefs = context.preferences.addons[__package__].preferences
         _server._python_executable = prefs.python_39_path or None

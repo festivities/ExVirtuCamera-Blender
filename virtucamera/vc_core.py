@@ -64,6 +64,8 @@ class VCServer:
                  main_thread_func=None, python_executable=None):
         self._vcbase = vcbase
         self._event_mode = event_mode
+        self._platform = platform
+        self._plugin_version = plugin_version
 
         self._is_serving = False
         self._is_connected = False
@@ -348,6 +350,50 @@ class VCServer:
         except (ConnectionError, OSError, RuntimeError):
             pass
         self._is_serving = False
+
+    @property
+    def bridge_alive(self):
+        """True if the bridge subprocess and reader thread are both running."""
+        return (
+            self._proc is not None
+            and self._proc.poll() is None
+            and self._reader_thread is not None
+            and self._reader_thread.is_alive()
+        )
+
+    def restart_bridge(self):
+        """Kill the crashed bridge and start a fresh one, resetting all state."""
+        # Close sockets
+        for sock in (self._cb_sock, self._cmd_sock):
+            if sock:
+                try:
+                    sock.close()
+                except Exception:
+                    pass
+        self._cb_sock = None
+        self._cmd_sock = None
+        # Kill old process
+        if self._proc is not None:
+            try:
+                self._proc.kill()
+                self._proc.wait(timeout=5)
+            except Exception:
+                pass
+        self._proc = None
+        self._reader_thread = None
+        # Reset all state flags
+        self._is_serving = False
+        self._is_connected = False
+        self._is_event_loop_running = False
+        self._is_capturing = False
+        self._is_stopping = False
+        self._client_ip = ""
+        self._client_port = 0
+        self._current_camera = ""
+        with self._callback_lock:
+            self._callback_queue.clear()
+        # Start a fresh bridge subprocess
+        self._start_bridge(self._platform, self._plugin_version, None)
 
     def set_capture_resolution(self, width, height):
         self._capture_width = width
