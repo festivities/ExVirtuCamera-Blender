@@ -1,3 +1,8 @@
+# PyVirtuCamera - Python 3.9 Bridge Server
+# Runs inside a Python 3.9 subprocess to host the real vc_core.pyd.
+# Communicates with the Blender-side wrapper via local TCP sockets
+# and shares frame data via multiprocessing shared memory.
+
 import os
 import sys
 import json

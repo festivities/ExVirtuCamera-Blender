@@ -5,7 +5,8 @@ import traceback
 
 import bpy
 import bpy.utils.previews
-import gpu
+import ctypes
+from ctypes import wintypes
 import mathutils
 from multiprocessing.shared_memory import SharedMemory
 
@@ -264,6 +265,11 @@ class VirtuCameraBlender(VCBase):
 
     def capture_will_start(self, vcserver):
         (x, y, width, height) = self.get_view_camera_rect()
+        
+        # Align resolution to multiples of 16 to prevent stride mismatch
+        width = (width // 16) * 16
+        height = (height // 16) * 16
+        
         shm_size = width * height * 4
         if not hasattr(self, '_shm_counter'):
             self._shm_counter = 0
@@ -288,10 +294,10 @@ class VirtuCameraBlender(VCBase):
         vcserver.set_capture_mode(
             vcserver.CAPMODE_BUFFER, vcserver.CAPFORMAT_UBYTE_BGRA,
         )
-        vcserver.set_vertical_flip(True)
+        vcserver.set_vertical_flip(False)
 
-        # Create offscreen buffer for rendering
-        self._offscreen = gpu.types.GPUOffScreen(width, height)
+        import mss
+        self._mss = mss.mss()
         self._capture_width = width
         self._capture_height = height
 
@@ -302,9 +308,12 @@ class VirtuCameraBlender(VCBase):
 
     def capture_did_end(self, vcserver):
         self._capture_timer_running = False
-        if hasattr(self, '_offscreen') and self._offscreen is not None:
-            self._offscreen.free()
-            self._offscreen = None
+        if hasattr(self, '_mss') and self._mss is not None:
+            try:
+                self._mss.close()
+            except Exception:
+                pass
+            self._mss = None
         if self._shm is not None:
             try:
                 self._shm.close()
@@ -322,6 +331,14 @@ class VirtuCameraBlender(VCBase):
 
         try:
             (x, y, width, height) = self.get_view_camera_rect()
+
+            # Align resolution to multiples of 16 to prevent stride mismatch
+            # in the C++ MJPEG encoder.
+            width = (width // 16) * 16
+            height = (height // 16) * 16
+
+            if width <= 0 or height <= 0:
+                return 1.0 / 30.0
 
             # Handle resolution changes
             if width != self._capture_width or height != self._capture_height:
@@ -352,10 +369,6 @@ class VirtuCameraBlender(VCBase):
                     self._shm = None
                     return None
 
-                # Recreate offscreen buffer
-                if self._offscreen is not None:
-                    self._offscreen.free()
-                self._offscreen = gpu.types.GPUOffScreen(width, height)
                 self._capture_width = width
                 self._capture_height = height
 
@@ -364,32 +377,50 @@ class VirtuCameraBlender(VCBase):
             if area is None or region is None:
                 return 1.0 / 30.0
 
-            space = area.spaces.active
-            r3d = space.region_3d
+            # Get window client height
+            window = bpy.context.window
+            client_height = window.height
 
-            # Render viewport into offscreen buffer
-            import numpy as np
-            with self._offscreen.bind():
-                self._offscreen.draw_view3d(
-                    bpy.context.scene,
-                    bpy.context.view_layer,
-                    space,
-                    region,
-                    r3d.view_matrix,
-                    r3d.window_matrix,
-                )
-                fb = gpu.state.active_framebuffer_get()
-                buffer = fb.read_color(0, 0, width, height, 4, 0, 'UBYTE')
-                raw = bytes(buffer)
+            # Find Blender HWND using user32 APIs
+            hwnd = ctypes.windll.user32.GetActiveWindow()
+            if not hwnd:
+                hwnd = ctypes.windll.user32.GetForegroundWindow()
+            if not hwnd:
+                hwnd = ctypes.windll.user32.FindWindowW('GHOST_WindowClass', None)
 
-            arr = np.frombuffer(raw, dtype=np.uint8).reshape(-1, 4)
-            bgra = arr.copy()
-            bgra[:, 0] = arr[:, 2]  # B = old R
-            bgra[:, 2] = arr[:, 0]  # R = old B
-            bgra[:, 3] = 255        # Force opaque
-            self._shm.buf[:] = bgra.tobytes()
+            # Calculate client-space top-left coordinates of the camera rect
+            # Blender y starts from the bottom of the window, while Windows coordinates
+            # start from the top of the client area.
+            client_x = region.x + x
+            client_y = client_height - (region.y + y + height)
 
-        except Exception:
+            # Translate client-space coordinates to absolute OS screen coordinates
+            if hwnd:
+                class POINT(ctypes.Structure):
+                    _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+                pt = POINT(client_x, client_y)
+                ctypes.windll.user32.ClientToScreen(hwnd, ctypes.byref(pt))
+                screen_left = pt.x
+                screen_top = pt.y
+            else:
+                # Fallback estimate in case HWND could not be resolved
+                screen_left = client_x
+                screen_top = client_y
+
+            monitor = {
+                "left": screen_left,
+                "top": screen_top,
+                "width": width,
+                "height": height
+            }
+
+            # Grab screen region with mss
+            sct_img = self._mss.grab(monitor)
+            self._shm.buf[:] = sct_img.bgra
+
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
             pass
 
         # Tag viewport for redraw to keep it alive

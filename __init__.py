@@ -1,1 +1,1 @@
-from .virtucamera_blender import register, unregister  # noqa: F401
+from .virtucamera_blender import register, unregister
