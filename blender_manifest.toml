@@ -7,5 +7,7 @@ tagline = "Stream your Blender viewport to the VirtuCamera mobile app"
 maintainer = "festivity"
 type = "add-on"
 
+blender_version_min = "5.1.0"
+
 [permissions]
 network = "Communicate with the VirtuCamera mobile app over local network"
