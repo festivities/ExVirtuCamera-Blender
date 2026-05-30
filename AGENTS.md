@@ -1,12 +1,12 @@
 # ExVirtuCamera-Blender - Agent Manual
 
-This file is the living context for new sessions and other agents. Update it whenever behavior, constraints, or workflows change.
+This file is the living context for new sessions and other agents. Update it whenever behavior, constraints, or workflows change. If no update to this file is needed after a prompt by the user, inform accordingly.
 
 ## Project Overview
 ExVirtuCamera-Blender is a Blender addon that streams the 3D viewport to a mobile client. The capture path is OS-level screen capture via `mss` and a SharedMemory buffer shared with a bridge subprocess that hosts `vc_core.pyd`.
 
 ## Current Goal
-Prevent bridge crashes during rapid zoom/pan by eliminating SharedMemory reallocation races and stabilizing capture resolution updates.
+Maintain stability and guardrails. Primary stabilization goals (stabilizing zoom/pan SharedMemory and fixing Blender 4.3+ Animation v2 layered action crashes during playback/record) have been successfully achieved.
 
 ## Key Files and Roles
 - Blender addon entry and capture logic: [virtucamera_blender.py](virtucamera_blender.py)
@@ -32,6 +32,7 @@ This prevents a race where the C++ encoder reads a buffer that was resized or fr
 - Debounce `set_capture_resolution` calls to 200ms and fall back to the last committed resolution during rapid zoom. [virtucamera_blender.py](virtucamera_blender.py)
 - Write only the active frame bytes into SharedMemory (`frame_size` slice), not the full buffer. [virtucamera_blender.py](virtucamera_blender.py)
 - Clear cached ctypes arrays before closing SharedMemory and guard `get_capture_buffer` to current frame size. [virtucamera/vc_bridge_server.py](virtucamera/vc_bridge_server.py)
+- Support Blender 4.3+ Animation v2 layered action F-Curves dynamically using helper functions instead of querying legacy `action.fcurves` directly (prevents crashes during auto-keying/record). [virtucamera_blender.py](virtucamera_blender.py)
 
 ## Constraints and Caveats
 - `mss` capture requires the Blender viewport to remain visible and unobstructed.
@@ -64,7 +65,9 @@ Blender 5.1 API docs are available at:
 - Always align capture resolution to multiples of 16.
 - Keep the SHM write size matched to the active frame size.
 - Avoid changing capture mode or pixel format without updating both sides of the bridge.
+- Always query and modify F-Curves dynamically using helper functions `_iter_action_fcurves` and `_remove_action_fcurves_by_path` to support both legacy and layered actions (Blender 4.3+).
 - Use `py` for Python commands in this workspace.
+- Never modify the extension inside Blender's extension folder (e.g. "C:\Apps\blender\portable\extensions\user_default\exvirtucamera_blender\").
 
 ## When You Make Changes
 - Update this manual with any new constraints, workflow steps, or behavior changes.

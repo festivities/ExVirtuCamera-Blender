@@ -4,9 +4,9 @@ This is a community revival project for the original **VirtuCamera 1** app integ
 
 The original VirtuCamera 1 app has been abandoned in favor of VirtuCamera 2. As Blender's API evolved (particularly with the transition from Python 3.9 to 3.11+ and the deprecation of the `bgl` module in Blender 4.0+), the original addon stopped working, leaving legacy app users without a working pipeline.
 
-This project revives the addon by wrapping the original `vc_core.pyd` (which was hardcoded to Python 3.9) in a multi-process bridge server, and modernizing the viewport capture logic to use the new `gpu` module. It is fully compatible with modern Blender versions (4.0+ and 5.1+).
+This project revives the addon by wrapping the original `vc_core.pyd` (which was hardcoded to Python 3.9) in a multi-process bridge server, and utilizing high-performance OS-level screen capture to stream the 3D viewport. It is fully compatible with modern Blender versions (4.0+ and 5.1+).
 
-The revival works by spawning a hidden Python 3.9 background process that loads the original `vc_core.pyd`. Blender communicates with this background process using ultra-low-latency TCP sockets over localhost. For viewport streaming, instead of serializing millions of pixels over JSON, Blender writes the `gpu` framebuffer directly into a `multiprocessing.SharedMemory` block, which the background process reads and forwards to the phone instantly.
+The revival works by spawning a hidden Python 3.9 background process that loads the original `vc_core.pyd`. Blender communicates with this background process using ultra-low-latency TCP sockets over localhost. For viewport streaming, the addon maps the 3D viewport region to screen coordinates and captures it with ultra-fast OS-level capture (`mss`). The BGRA frame bytes are written directly into a preallocated `multiprocessing.SharedMemory` block, which the background process reads and forwards to the phone instantly. This architecture prevents memory reallocation races and ensures extremely stable streaming even during rapid zoom and pan.
 
 ## Installation
 

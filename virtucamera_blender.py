@@ -16,6 +16,35 @@ from .virtucamera import VCBase, VCServer
 plugin_version = (1, 1, 0)
 
 
+def _iter_action_fcurves(action):
+    if not action:
+        return
+    if getattr(action, "is_action_legacy", True) and hasattr(action, "fcurves"):
+        yield from action.fcurves
+    elif hasattr(action, "layers"):
+        for layer in action.layers:
+            for strip in getattr(layer, "strips", []):
+                for bag in getattr(strip, "channelbags", []):
+                    yield from getattr(bag, "fcurves", [])
+
+def _remove_action_fcurves_by_path(action, data_paths):
+    if not action:
+        return
+    if getattr(action, "is_action_legacy", True) and hasattr(action, "fcurves"):
+        for fcu in list(action.fcurves):
+            if fcu.data_path in data_paths:
+                action.fcurves.remove(fcu)
+    elif hasattr(action, "layers"):
+        for layer in action.layers:
+            for strip in getattr(layer, "strips", []):
+                for bag in getattr(strip, "channelbags", []):
+                    fcurves = getattr(bag, "fcurves", None)
+                    if fcurves is not None:
+                        for fcu in list(fcurves):
+                            if fcu.data_path in data_paths:
+                                fcurves.remove(fcu)
+
+
 class VirtuCameraBlender(VCBase):
     TRANSFORM_CHANNELS = (
         "location", "rotation_euler", "rotation_quaternion",
@@ -183,13 +212,13 @@ class VirtuCameraBlender(VCBase):
         camera = bpy.data.objects[camera_name]
         transform_has_keys = False
         if camera.animation_data and camera.animation_data.action:
-            for fcu in camera.animation_data.action.fcurves:
+            for fcu in _iter_action_fcurves(camera.animation_data.action):
                 if fcu.data_path in self.TRANSFORM_CHANNELS:
                     transform_has_keys = True
                     break
         focal_length_has_keys = False
         if camera.data.animation_data and camera.data.animation_data.action:
-            for fcu in camera.data.animation_data.action.fcurves:
+            for fcu in _iter_action_fcurves(camera.data.animation_data.action):
                 if fcu.data_path == "lens":
                     focal_length_has_keys = True
                     break
@@ -249,14 +278,9 @@ class VirtuCameraBlender(VCBase):
     def remove_camera_keys(self, vcserver, camera_name):
         camera = bpy.data.objects[camera_name]
         if camera.animation_data and camera.animation_data.action:
-            for fcu in list(camera.animation_data.action.fcurves):
-                if fcu.data_path in self.TRANSFORM_CHANNELS:
-                    camera.animation_data.action.fcurves.remove(fcu)
+            _remove_action_fcurves_by_path(camera.animation_data.action, self.TRANSFORM_CHANNELS)
         if camera.data.animation_data and camera.data.animation_data.action:
-            for fcu in list(camera.data.animation_data.action.fcurves):
-                if fcu.data_path == "lens":
-                    camera.data.animation_data.action.fcurves.remove(fcu)
-                    break
+            _remove_action_fcurves_by_path(camera.data.animation_data.action, ("lens",))
 
     def create_new_camera(self, vcserver):
         bpy.ops.object.camera_add(enter_editmode=False)
@@ -660,7 +684,7 @@ class GRAPH_OT_virtucamera_euler_filter(bpy.types.Operator):
         for area in context.screen.areas:
             if area.type == 'GRAPH_EDITOR':
                 fcurves = [
-                    fcu for fcu in camera.animation_data.action.fcurves
+                    fcu for fcu in _iter_action_fcurves(camera.animation_data.action)
                     if fcu.data_path == 'rotation_euler'
                 ]
                 with context.temp_override(
