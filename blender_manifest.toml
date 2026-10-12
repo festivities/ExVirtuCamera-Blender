@@ -1,15 +1,20 @@
 schema_version = "1.0.0"
 
 id = "exvirtucamera_blender"
-version = "1.3.3"
+version = "2.0.0"
 name = "ExVirtuCamera"
-tagline = "Stream your Blender viewport to the VirtuCamera mobile app"
+tagline = "Stream your Blender viewport to the VirtuCamera 1 mobile app"
 maintainer = "festivity"
 type = "add-on"
 
 website = "https://github.com/festivities/ExVirtuCamera-Blender"
 
 blender_version_min = "4.4.0"
+platforms = ["windows-x64"]
+wheels = [
+  "./wheels/av-18.1.0-cp311-abi3-win_amd64.whl",
+  "./wheels/qrcode-8.2-py3-none-any.whl",
+]
 
 tags = ["Animation"]
 
@@ -25,9 +30,13 @@ paths_exclude_pattern = [
   "__pycache__/",
   ".opencode/",
   ".vscode/",
+  ".claude/",
   ".git",
-  "*.zip",
   ".gitignore",
+  "docs/",
+  "tests/",
+  "data/",
+  "*.zip",
   "*.bat",
   "*.md"
 ]
