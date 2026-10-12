@@ -1,0 +1,1053 @@
+{
+ "computer_name": "TESTHOST",
+ "generated_by": "tests/regen_conformance_fixture.py",
+ "platform": "Blender",
+ "plugin_version": [
+  2,
+  0,
+  0
+ ],
+ "pyd_sha256": "9ffbb6c9911f7f336fc46fb9f8805a00b230aa99480fbe85fa2f2c74566ad552",
+ "source": "original vc_core.cp39-win_amd64.pyd, py 3.9.4",
+ "steps": [
+  {
+   "callbacks": [
+    [
+     "client_connected"
+    ],
+    [
+     "get_playback_fps"
+    ]
+   ],
+   "label": "ASK SERVER_INFO",
+   "reply": "0020000000020001000200426c656e6465725f54455354484f5354202d20426c656e646572",
+   "request": "00"
+  },
+  {
+   "callbacks": [
+    [
+     "get_playback_fps"
+    ]
+   ],
+   "label": "ASK PLUGIN_VERSION",
+   "reply": "08020000000000",
+   "request": "08"
+  },
+  {
+   "callbacks": [
+    [
+     "get_playback_fps"
+    ]
+   ],
+   "label": "ASK SCENE_STATUS, no camera",
+   "reply": "c8",
+   "request": "01"
+  },
+  {
+   "callbacks": [
+    [
+     "get_playback_fps"
+    ]
+   ],
+   "label": "ASK CAMERA_MATRIX, no camera",
+   "reply": "c8",
+   "request": "03"
+  },
+  {
+   "callbacks": [
+    [
+     "get_playback_fps"
+    ]
+   ],
+   "label": "ASK CAMERA_HAS_KEYS, no camera",
+   "reply": "c8",
+   "request": "06"
+  },
+  {
+   "callbacks": [
+    [
+     "get_playback_fps"
+    ]
+   ],
+   "label": "ASK VIEWPORT_IMG, not streaming",
+   "reply": "c9",
+   "request": "04"
+  },
+  {
+   "callbacks": [
+    [
+     "get_script_labels"
+    ],
+    [
+     "get_playback_fps"
+    ]
+   ],
+   "label": "ASK SCRIPT_INFO",
+   "reply": "070a000000416c7068612542657461",
+   "request": "07"
+  },
+  {
+   "callbacks": [
+    [
+     "get_playback_fps"
+    ]
+   ],
+   "label": "SET CAMERA_MATRIX, no camera",
+   "reply": "35c8",
+   "request": "350000000000000000000000000000e03f000000000000f03f000000000000f83f0000000000000040000000000000044000000000000008400000000000000c40000000000000104000000000000012400000000000001440000000000000164000000000000018400000000000001a400000000000001c400000000000001e40"
+  },
+  {
+   "callbacks": [
+    [
+     "get_playback_fps"
+    ]
+   ],
+   "label": "SET FOCAL_LENGTH, no camera",
+   "reply": "37c8",
+   "request": "370000000000004940"
+  },
+  {
+   "callbacks": [
+    [
+     "get_playback_fps"
+    ]
+   ],
+   "label": "SET CAMERA_MATRIX_KEYS, no camera",
+   "reply": "3bc8",
+   "request": "3b01000000000000000000000000000000e03f000000000000f03f000000000000f83f0000000000000040000000000000044000000000000008400000000000000c40000000000000104000000000000012400000000000001440000000000000164000000000000018400000000000001a400000000000001c400000000000001e40000000000000f03f"
+  },
+  {
+   "callbacks": [
+    [
+     "get_playback_fps"
+    ]
+   ],
+   "label": "SET CAMERA_FLEN_KEYS, no camera",
+   "reply": "3cc8",
+   "request": "3c01000000000000804140000000000000f03f"
+  },
+  {
+   "callbacks": [
+    [
+     "get_playback_fps"
+    ]
+   ],
+   "label": "DO REMOVE_CAMERA_KEYS, no camera",
+   "reply": "9bc8",
+   "request": "9b"
+  },
+  {
+   "callbacks": [
+    [
+     "execute_script",
+     0,
+     ""
+    ],
+    [
+     "get_playback_fps"
+    ]
+   ],
+   "label": "DO EXECUTE_SCRIPT, no camera",
+   "reply": "9d00",
+   "request": "9d00"
+  },
+  {
+   "callbacks": [
+    [
+     "get_playback_fps"
+    ]
+   ],
+   "label": "DO START_STREAMING, no camera",
+   "reply": "96c8",
+   "request": "960000f0410000004100000001"
+  },
+  {
+   "callbacks": [
+    [
+     "get_scene_cameras"
+    ],
+    [
+     "get_playback_fps"
+    ]
+   ],
+   "label": "ASK SCENE_CAMERAS",
+   "reply": "0226000000ffff43616d6572612443616d2e3030312447686f73742443616d2e3030322443616d2e303033",
+   "request": "02"
+  },
+  {
+   "callbacks": [
+    [
+     "get_camera_exists",
+     "Ghost"
+    ],
+    [
+     "get_playback_fps"
+    ]
+   ],
+   "label": "SET CURRENT_CAMERA, Ghost (missing)",
+   "reply": "34c8",
+   "request": "340200"
+  },
+  {
+   "callbacks": [
+    [
+     "get_playback_fps"
+    ]
+   ],
+   "label": "ASK SCENE_STATUS, after Ghost",
+   "reply": "c8",
+   "request": "01"
+  },
+  {
+   "callbacks": [
+    [
+     "get_camera_exists",
+     "Camera"
+    ],
+    [
+     "current_camera_changed",
+     "Camera"
+    ],
+    [
+     "get_playback_fps"
+    ]
+   ],
+   "label": "SET CURRENT_CAMERA, Camera",
+   "reply": "34",
+   "request": "340000"
+  },
+  {
+   "callbacks": [
+    [
+     "get_scene_cameras"
+    ],
+    [
+     "get_playback_fps"
+    ]
+   ],
+   "label": "ASK SCENE_CAMERAS, Camera selected",
+   "reply": "0226000000000043616d6572612443616d2e3030312447686f73742443616d2e3030322443616d2e303033",
+   "request": "02"
+  },
+  {
+   "callbacks": [
+    [
+     "get_camera_exists",
+     "Camera"
+    ],
+    [
+     "get_playback_state"
+    ],
+    [
+     "get_camera_focal_length",
+     "Camera"
+    ],
+    [
+     "get_playback_fps"
+    ]
+   ],
+   "label": "ASK SCENE_STATUS",
+   "reply": "010000000000002840000000000000f03f0000000000406f400000000000c04140",
+   "request": "01"
+  },
+  {
+   "callbacks": [
+    [
+     "get_camera_exists",
+     "Camera"
+    ],
+    [
+     "get_camera_transform",
+     "Camera"
+    ],
+    [
+     "get_playback_fps"
+    ]
+   ],
+   "label": "ASK CAMERA_MATRIX",
+   "reply": "03000000000000f83f00000000000004400000000000000c40000000000000124000000000000016400000000000001a400000000000001e40000000000000214000000000000023400000000000002540000000000000274000000000000029400000000000002b400000000000002d400000000000002f400000000000803040",
+   "request": "03"
+  },
+  {
+   "callbacks": [
+    [
+     "get_camera_exists",
+     "Camera"
+    ],
+    [
+     "get_camera_has_keys",
+     "Camera"
+    ],
+    [
+     "get_playback_fps"
+    ]
+   ],
+   "label": "ASK CAMERA_HAS_KEYS, Camera",
+   "reply": "0603",
+   "request": "06"
+  },
+  {
+   "callbacks": [
+    [
+     "get_camera_exists",
+     "Cam.001"
+    ],
+    [
+     "current_camera_changed",
+     "Cam.001"
+    ],
+    [
+     "get_playback_fps"
+    ]
+   ],
+   "label": "SET CURRENT_CAMERA, Cam.001",
+   "reply": "34",
+   "request": "340100"
+  },
+  {
+   "callbacks": [
+    [
+     "get_camera_exists",
+     "Cam.001"
+    ],
+    [
+     "get_camera_has_keys",
+     "Cam.001"
+    ],
+    [
+     "get_playback_fps"
+    ]
+   ],
+   "label": "ASK CAMERA_HAS_KEYS, Cam.001",
+   "reply": "0605",
+   "request": "06"
+  },
+  {
+   "callbacks": [
+    [
+     "get_camera_exists",
+     "Cam.002"
+    ],
+    [
+     "current_camera_changed",
+     "Cam.002"
+    ],
+    [
+     "get_playback_fps"
+    ]
+   ],
+   "label": "SET CURRENT_CAMERA, Cam.002",
+   "reply": "34",
+   "request": "340300"
+  },
+  {
+   "callbacks": [
+    [
+     "get_camera_exists",
+     "Cam.002"
+    ],
+    [
+     "get_camera_has_keys",
+     "Cam.002"
+    ],
+    [
+     "get_playback_fps"
+    ]
+   ],
+   "label": "ASK CAMERA_HAS_KEYS, Cam.002",
+   "reply": "0607",
+   "request": "06"
+  },
+  {
+   "callbacks": [
+    [
+     "get_camera_exists",
+     "Cam.003"
+    ],
+    [
+     "current_camera_changed",
+     "Cam.003"
+    ],
+    [
+     "get_playback_fps"
+    ]
+   ],
+   "label": "SET CURRENT_CAMERA, Cam.003",
+   "reply": "34",
+   "request": "340400"
+  },
+  {
+   "callbacks": [
+    [
+     "get_camera_exists",
+     "Cam.003"
+    ],
+    [
+     "get_camera_has_keys",
+     "Cam.003"
+    ],
+    [
+     "get_playback_fps"
+    ]
+   ],
+   "label": "ASK CAMERA_HAS_KEYS, Cam.003",
+   "reply": "0600",
+   "request": "06"
+  },
+  {
+   "callbacks": [
+    [
+     "get_scene_cameras"
+    ],
+    [
+     "get_playback_fps"
+    ]
+   ],
+   "label": "ASK SCENE_CAMERAS, Cam.003 selected",
+   "reply": "0226000000040043616d6572612443616d2e3030312447686f73742443616d2e3030322443616d2e303033",
+   "request": "02"
+  },
+  {
+   "callbacks": [
+    [
+     "set_playback_range",
+     1.0,
+     100.0
+    ],
+    [
+     "get_playback_fps"
+    ]
+   ],
+   "label": "SET PLAYBACK_RANGE",
+   "reply": "32",
+   "request": "32000000000000f03f0000000000005940"
+  },
+  {
+   "callbacks": [
+    [
+     "set_frame",
+     42.5
+    ],
+    [
+     "get_playback_fps"
+    ]
+   ],
+   "label": "SET CURRENT_TIME",
+   "reply": "33",
+   "request": "330000000000404540"
+  },
+  {
+   "callbacks": [
+    [
+     "get_camera_exists",
+     "Cam.003"
+    ],
+    [
+     "set_camera_transform",
+     "Cam.003",
+     [
+      0.0,
+      0.5,
+      1.0,
+      1.5,
+      2.0,
+      2.5,
+      3.0,
+      3.5,
+      4.0,
+      4.5,
+      5.0,
+      5.5,
+      6.0,
+      6.5,
+      7.0,
+      7.5
+     ]
+    ],
+    [
+     "get_playback_fps"
+    ]
+   ],
+   "label": "SET CAMERA_MATRIX",
+   "reply": "35",
+   "request": "350000000000000000000000000000e03f000000000000f03f000000000000f83f0000000000000040000000000000044000000000000008400000000000000c40000000000000104000000000000012400000000000001440000000000000164000000000000018400000000000001a400000000000001c400000000000001e40"
+  },
+  {
+   "callbacks": [
+    [
+     "get_camera_exists",
+     "Cam.003"
+    ],
+    [
+     "set_camera_transform",
+     "Cam.003",
+     [
+      0.0,
+      0.5,
+      1.0,
+      1.5,
+      2.0,
+      2.5,
+      3.0,
+      3.5,
+      4.0,
+      4.5,
+      5.0,
+      5.5,
+      6.0,
+      6.5,
+      7.0,
+      7.5
+     ]
+    ],
+    [
+     "set_frame",
+     43.0
+    ],
+    [
+     "get_playback_fps"
+    ]
+   ],
+   "label": "SET CAMERA_MATRIX_AT_TIME",
+   "reply": "36",
+   "request": "360000000000000000000000000000e03f000000000000f03f000000000000f83f0000000000000040000000000000044000000000000008400000000000000c40000000000000104000000000000012400000000000001440000000000000164000000000000018400000000000001a400000000000001c400000000000001e400000000000804540"
+  },
+  {
+   "callbacks": [
+    [
+     "get_camera_exists",
+     "Cam.003"
+    ],
+    [
+     "set_camera_focal_length",
+     "Cam.003",
+     50.0
+    ],
+    [
+     "get_playback_fps"
+    ]
+   ],
+   "label": "SET FOCAL_LENGTH",
+   "reply": "37",
+   "request": "370000000000004940"
+  },
+  {
+   "callbacks": [
+    [
+     "get_camera_exists",
+     "Cam.003"
+    ],
+    [
+     "set_camera_focal_length",
+     "Cam.003",
+     35.0
+    ],
+    [
+     "set_frame",
+     44.0
+    ],
+    [
+     "get_playback_fps"
+    ]
+   ],
+   "label": "SET FOCAL_LENGTH_AT_TIME",
+   "reply": "38",
+   "request": "3800000000008041400000000000004640"
+  },
+  {
+   "callbacks": [
+    [
+     "get_camera_exists",
+     "Cam.003"
+    ],
+    [
+     "set_camera_transform",
+     "Cam.003",
+     [
+      0.0,
+      0.5,
+      1.0,
+      1.5,
+      2.0,
+      2.5,
+      3.0,
+      3.5,
+      4.0,
+      4.5,
+      5.0,
+      5.5,
+      6.0,
+      6.5,
+      7.0,
+      7.5
+     ]
+    ],
+    [
+     "set_camera_focal_length",
+     "Cam.003",
+     28.0
+    ],
+    [
+     "get_playback_fps"
+    ]
+   ],
+   "label": "SET CAMERA_ALL",
+   "reply": "39",
+   "request": "390000000000000000000000000000e03f000000000000f03f000000000000f83f0000000000000040000000000000044000000000000008400000000000000c40000000000000104000000000000012400000000000001440000000000000164000000000000018400000000000001a400000000000001c400000000000001e400000000000003c40"
+  },
+  {
+   "callbacks": [
+    [
+     "get_camera_exists",
+     "Cam.003"
+    ],
+    [
+     "set_camera_transform",
+     "Cam.003",
+     [
+      0.0,
+      0.5,
+      1.0,
+      1.5,
+      2.0,
+      2.5,
+      3.0,
+      3.5,
+      4.0,
+      4.5,
+      5.0,
+      5.5,
+      6.0,
+      6.5,
+      7.0,
+      7.5
+     ]
+    ],
+    [
+     "set_camera_focal_length",
+     "Cam.003",
+     28.0
+    ],
+    [
+     "set_frame",
+     45.0
+    ],
+    [
+     "get_playback_fps"
+    ]
+   ],
+   "label": "SET CAMERA_ALL_AT_TIME",
+   "reply": "3a",
+   "request": "3a0000000000000000000000000000e03f000000000000f03f000000000000f83f0000000000000040000000000000044000000000000008400000000000000c40000000000000104000000000000012400000000000001440000000000000164000000000000018400000000000001a400000000000001c400000000000001e400000000000003c400000000000804640"
+  },
+  {
+   "callbacks": [
+    [
+     "get_camera_transform",
+     "Cam.003"
+    ],
+    [
+     "get_camera_focal_length",
+     "Cam.003"
+    ],
+    [
+     "create_new_camera"
+    ],
+    [
+     "set_camera_transform",
+     "Camera.New",
+     [
+      1.75,
+      2.75,
+      3.75,
+      4.75,
+      5.75,
+      6.75,
+      7.75,
+      8.75,
+      9.75,
+      10.75,
+      11.75,
+      12.75,
+      13.75,
+      14.75,
+      15.75,
+      16.75
+     ]
+    ],
+    [
+     "set_camera_focal_length",
+     "Camera.New",
+     24.0
+    ],
+    [
+     "get_playback_fps"
+    ]
+   ],
+   "label": "DO CREATE_NEW_CAMERA (new camera becomes current)",
+   "reply": "9c",
+   "request": "9c"
+  },
+  {
+   "callbacks": [
+    [
+     "start_playback",
+     true
+    ],
+    [
+     "get_playback_fps"
+    ]
+   ],
+   "label": "DO START_PLAYBACK",
+   "reply": "98",
+   "request": "9801"
+  },
+  {
+   "callbacks": [
+    [
+     "stop_playback"
+    ],
+    [
+     "get_playback_fps"
+    ]
+   ],
+   "label": "DO STOP_PLAYBACK",
+   "reply": "99",
+   "request": "99"
+  },
+  {
+   "callbacks": [
+    [
+     "execute_script",
+     0,
+     "Camera.New"
+    ],
+    [
+     "get_playback_fps"
+    ]
+   ],
+   "label": "DO EXECUTE_SCRIPT 0",
+   "reply": "9d00",
+   "request": "9d00"
+  },
+  {
+   "callbacks": [
+    [
+     "execute_script",
+     1,
+     "Camera.New"
+    ],
+    [
+     "get_playback_fps"
+    ]
+   ],
+   "label": "DO EXECUTE_SCRIPT 1 (returns False)",
+   "reply": "cb01",
+   "request": "9d01"
+  },
+  {
+   "callbacks": [
+    [
+     "get_playback_fps"
+    ]
+   ],
+   "label": "DO STOP_STREAMING, not streaming",
+   "reply": "97",
+   "request": "97"
+  },
+  {
+   "callbacks": [
+    [
+     "get_camera_exists",
+     "Camera.New"
+    ],
+    [
+     "get_playback_fps"
+    ]
+   ],
+   "label": "DO REMOVE_CAMERA_KEYS, new camera (missing)",
+   "reply": "9bc8",
+   "request": "9b"
+  },
+  {
+   "callbacks": [
+    [
+     "get_camera_exists",
+     "Cam.003"
+    ],
+    [
+     "current_camera_changed",
+     "Cam.003"
+    ],
+    [
+     "get_playback_fps"
+    ]
+   ],
+   "label": "SET CURRENT_CAMERA, Cam.003 again",
+   "reply": "34",
+   "request": "340400"
+  },
+  {
+   "callbacks": [
+    [
+     "get_camera_exists",
+     "Cam.003"
+    ],
+    [
+     "remove_camera_keys",
+     "Cam.003"
+    ],
+    [
+     "get_playback_fps"
+    ]
+   ],
+   "label": "DO REMOVE_CAMERA_KEYS, Cam.003",
+   "reply": "9b",
+   "request": "9b"
+  },
+  {
+   "callbacks": [
+    [
+     "get_camera_exists",
+     "Cam.003"
+    ],
+    [
+     "set_camera_transform_keys",
+     "Cam.003",
+     [
+      1.0,
+      2.0
+     ],
+     [
+      [
+       0.0,
+       0.5,
+       1.0,
+       1.5,
+       2.0,
+       2.5,
+       3.0,
+       3.5,
+       4.0,
+       4.5,
+       5.0,
+       5.5,
+       6.0,
+       6.5,
+       7.0,
+       7.5
+      ],
+      [
+       0.0,
+       1.5,
+       3.0,
+       4.5,
+       6.0,
+       7.5,
+       9.0,
+       10.5,
+       12.0,
+       13.5,
+       15.0,
+       16.5,
+       18.0,
+       19.5,
+       21.0,
+       22.5
+      ]
+     ]
+    ],
+    [
+     "get_playback_fps"
+    ]
+   ],
+   "label": "SET CAMERA_MATRIX_KEYS, 2 keys",
+   "reply": "3b",
+   "request": "3b02000000000000000000000000000000e03f000000000000f03f000000000000f83f0000000000000040000000000000044000000000000008400000000000000c40000000000000104000000000000012400000000000001440000000000000164000000000000018400000000000001a400000000000001c400000000000001e40000000000000f03f0000000000000000000000000000f83f0000000000000840000000000000124000000000000018400000000000001e400000000000002240000000000000254000000000000028400000000000002b400000000000002e40000000000080304000000000000032400000000000803340000000000000354000000000008036400000000000000040"
+  },
+  {
+   "callbacks": [
+    [
+     "get_camera_exists",
+     "Cam.003"
+    ],
+    [
+     "set_camera_flen_keys",
+     "Cam.003",
+     [
+      1.0,
+      2.0,
+      3.0
+     ],
+     [
+      35.0,
+      50.0,
+      85.0
+     ]
+    ],
+    [
+     "get_playback_fps"
+    ]
+   ],
+   "label": "SET CAMERA_FLEN_KEYS, 3 keys",
+   "reply": "3c",
+   "request": "3c03000000000000804140000000000000f03f0000000000004940000000000000004000000000004055400000000000000840"
+  },
+  {
+   "callbacks": [
+    [
+     "get_script_labels"
+    ],
+    [
+     "get_playback_fps"
+    ]
+   ],
+   "label": "ASK SCRIPT_INFO",
+   "reply": "070a000000416c7068612542657461",
+   "request": "07"
+  },
+  {
+   "callbacks": [
+    [
+     "get_playback_fps"
+    ]
+   ],
+   "label": "DO token 154 (no-op, no payload)",
+   "reply": "",
+   "request": "9a"
+  },
+  {
+   "callbacks": [
+    [
+     "get_camera_exists",
+     "Cam.003"
+    ],
+    [
+     "capture_will_start"
+    ],
+    [
+     "look_through_camera",
+     "Cam.003"
+    ],
+    [
+     "capture_did_end"
+    ],
+    [
+     "get_playback_fps"
+    ]
+   ],
+   "label": "DO START_STREAMING + STOP (video stripped)",
+   "reply": "9697",
+   "request": "960000f041000000410000000197"
+  },
+  {
+   "callbacks": [
+    [
+     "get_playback_fps"
+    ]
+   ],
+   "label": "ASK VIEWPORT_IMG, after STOP",
+   "reply": "c9",
+   "request": "04"
+  },
+  {
+   "callbacks": [
+    [
+     "current_camera_changed",
+     ""
+    ],
+    [
+     "client_disconnected"
+    ],
+    [
+     "client_connected"
+    ],
+    [
+     "get_playback_fps"
+    ]
+   ],
+   "label": "reconnect",
+   "reply": "",
+   "request": ""
+  },
+  {
+   "callbacks": [
+    [
+     "get_playback_fps"
+    ]
+   ],
+   "label": "ASK SCENE_STATUS, new connection (camera reset)",
+   "reply": "c8",
+   "request": "01"
+  },
+  {
+   "callbacks": [
+    [
+     "get_camera_exists",
+     "Camera"
+    ],
+    [
+     "current_camera_changed",
+     "Camera"
+    ],
+    [
+     "get_playback_fps"
+    ]
+   ],
+   "label": "SET CURRENT_CAMERA, index 0, no SCENE_CAMERAS on this connection",
+   "reply": "34",
+   "request": "340000"
+  },
+  {
+   "callbacks": [
+    [
+     "get_camera_exists",
+     "Camera"
+    ],
+    [
+     "get_playback_state"
+    ],
+    [
+     "get_camera_focal_length",
+     "Camera"
+    ],
+    [
+     "get_playback_fps"
+    ]
+   ],
+   "label": "ASK SCENE_STATUS, list kept across connections",
+   "reply": "010000000000002840000000000000f03f0000000000406f400000000000c04140",
+   "request": "01"
+  },
+  {
+   "callbacks": [
+    [
+     "get_scene_cameras"
+    ],
+    [
+     "get_playback_fps"
+    ]
+   ],
+   "label": "ASK SCENE_CAMERAS",
+   "reply": "0226000000000043616d6572612443616d2e3030312447686f73742443616d2e3030322443616d2e303033",
+   "request": "02"
+  },
+  {
+   "callbacks": [
+    [
+     "current_camera_changed",
+     ""
+    ],
+    [
+     "client_disconnected"
+    ],
+    [
+     "server_did_stop"
+    ]
+   ],
+   "label": "stop_serving while connected",
+   "reply": "",
+   "request": ""
+  }
+ ]
+}

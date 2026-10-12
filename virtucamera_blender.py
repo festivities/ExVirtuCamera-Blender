@@ -1,844 +1,568 @@
+"""VirtuCamera 1 host for Blender: callbacks, viewport stream, UI, registration.
+
+Every bpy call runs on the main thread: host callbacks via the server's event
+queue, capture via a timer, and the UI via Blender itself.
+"""
+
 import os
-import sys
-import math
 import time
 import traceback
 
 import bpy
 import bpy.utils.previews
-import ctypes
-from ctypes import wintypes
+import gpu
 import mathutils
-from multiprocessing.shared_memory import SharedMemory
+import numpy as np
+import qrcode
+from bpy_extras import anim_utils
 
-from .virtucamera import VCBase, VCServer
+PLUGIN_VERSION = (2, 0, 0)
+TRANSFORM_PATHS = ("location", "rotation_euler", "rotation_quaternion", "rotation_axis_angle")
+EULER_ORDERS = ("XYZ", "XZY", "YXZ", "YZX", "ZXY", "ZYX")
 
-plugin_version = (1, 1, 0)
+# Blender (Z-up) -> VirtuCamera (Y-up) on column vectors: y' = z, z' = -y.
+# The wire format is the transpose of (V @ M), so the camera's own axes are not
+# converted, only the world. This is the VC1 convention; checked numerically.
+V_FROM_B = mathutils.Matrix(((1, 0, 0, 0), (0, 0, 1, 0), (0, -1, 0, 0), (0, 0, 0, 1)))
+V_TO_B = V_FROM_B.inverted()
 
 
-def _iter_action_fcurves(action):
-    if not action:
+# -- Transform conversion ---------------------------------------------------
+
+def _matrix_to_wire(matrix):
+    return tuple(v for row in (V_FROM_B @ matrix).transposed() for v in row)
+
+
+def _wire_to_matrix(values):
+    rows = mathutils.Matrix(tuple(tuple(values[i:i + 4]) for i in (0, 4, 8, 12)))
+    return V_TO_B @ rows.transposed()
+
+
+# -- F-Curves: slotted actions (4.4+, 5.x) with the legacy fallback ----------
+
+def _assigned_channelbag(adt):
+    if adt.action_slot is None:
+        return None
+    return anim_utils.action_get_channelbag_for_slot(adt.action, adt.action_slot)
+
+
+def _fcurve_owner(datablock):
+    """The object holding datablock's assigned F-Curves (.fcurves), or None."""
+    adt = datablock.animation_data
+    if adt is None or adt.action is None:
+        return None
+    action = adt.action
+    if action.is_action_legacy:
+        return action if hasattr(action, "fcurves") else None
+    return _assigned_channelbag(adt)
+
+
+def _iter_action_fcurves(datablock):
+    owner = _fcurve_owner(datablock)
+    return list(owner.fcurves) if owner is not None else []
+
+
+def _remove_action_fcurves_by_path(datablock, match):
+    owner = _fcurve_owner(datablock)
+    if owner is None:
         return
-    if getattr(action, "is_action_legacy", True) and hasattr(action, "fcurves"):
-        yield from action.fcurves
-    elif hasattr(action, "layers"):
-        for layer in action.layers:
-            for strip in getattr(layer, "strips", []):
-                for bag in getattr(strip, "channelbags", []):
-                    yield from getattr(bag, "fcurves", [])
-
-def _remove_action_fcurves_by_path(action, data_paths):
-    if not action:
-        return
-    if getattr(action, "is_action_legacy", True) and hasattr(action, "fcurves"):
-        for fcu in list(action.fcurves):
-            if fcu.data_path in data_paths:
-                action.fcurves.remove(fcu)
-    elif hasattr(action, "layers"):
-        for layer in action.layers:
-            for strip in getattr(layer, "strips", []):
-                for bag in getattr(strip, "channelbags", []):
-                    fcurves = getattr(bag, "fcurves", None)
-                    if fcurves is not None:
-                        for fcu in list(fcurves):
-                            if fcu.data_path in data_paths:
-                                fcurves.remove(fcu)
+    for fc in [fc for fc in owner.fcurves if match(fc.data_path)]:
+        owner.fcurves.remove(fc)
 
 
-class VirtuCameraBlender(VCBase):
-    TRANSFORM_CHANNELS = (
-        "location", "rotation_euler", "rotation_quaternion",
-        "rotation_axis_angle",
-    )
-    B_TO_V_ROTATION_MAT = mathutils.Matrix((
-        (1, 0, 0, 0),
-        (0, 0, -1, 0),
-        (0, 1, 0, 0),
-        (0, 0, 0, 1),
-    ))
-    V_TO_B_ROTATION_MAT = mathutils.Matrix((
-        (1, 0, 0, 0),
-        (0, 0, 1, 0),
-        (0, -1, 0, 0),
-        (0, 0, 0, 1),
-    ))
+def _fcurve(datablock, data_path, index=0):
+    """Existing or new F-Curve; creates animation_data and an action if missing."""
+    if datablock.animation_data is None:
+        datablock.animation_data_create()
+    adt = datablock.animation_data
+    if adt.action is None:
+        adt.action = bpy.data.actions.new(f"{datablock.name}Action")
+    return adt.action.fcurve_ensure_for_datablock(datablock, data_path, index=index)
 
-    last_rect_data = None
-    _shm = None
-    _shm_name = None
 
-    # Utility
+def _set_key(fc, frame, value):
+    fc.keyframe_points.insert(float(frame), float(value), options={'FAST'})
 
-    def camera_rect_changed(
-        self, offset_value_x, offset_value_y, zoom_value,
-        region_rect, camera_aspect_ratio,
-    ):
-        rect_data = (
-            offset_value_x, offset_value_y, zoom_value,
-            region_rect, camera_aspect_ratio,
-        )
-        if self.last_rect_data != rect_data:
-            self.last_rect_data = rect_data
-            return True
-        return False
 
-    def view_zoom_factor(self, zoom_value):
-        return ((zoom_value / 50 + math.sqrt(2)) / 2) ** 2
+def _euler_order(obj):
+    return obj.rotation_mode if obj.rotation_mode in EULER_ORDERS else "XYZ"
 
-    def view_region_width_zoom_factor(
-        self, zoom_factor, region_aspect_ratio, camera_aspect_ratio,
-    ):
-        return zoom_factor * min(camera_aspect_ratio, 1) / min(
-            region_aspect_ratio, 1
-        )
 
-    def view_offset_factor(self, offset_value, zoom_factor):
-        return offset_value * zoom_factor * -2
+# -- Scene helpers ----------------------------------------------------------
 
-    def _find_3d_region(self):
-        for area in bpy.context.screen.areas:
+def _prefs():
+    return bpy.context.preferences.addons[__package__].preferences
+
+
+def _is_visible_camera(obj):
+    return obj.type == 'CAMERA' and obj.visible_get()
+
+
+def _tag_redraw():
+    for window in bpy.context.window_manager.windows:
+        for area in window.screen.areas:
             if area.type == 'VIEW_3D':
-                for region in area.regions:
-                    if region.type == 'WINDOW':
-                        return area, region
-        return None, None
+                area.tag_redraw()
 
-    def get_view_camera_rect(self):
+
+def _find_view3d():
+    """(space, WINDOW region) of a VIEW_3D area, preferring one in camera view."""
+    fallback = None
+    for window in bpy.context.window_manager.windows:
+        for area in window.screen.areas:
+            if area.type != 'VIEW_3D':
+                continue
+            region = next((r for r in area.regions if r.type == 'WINDOW'), None)
+            if region is None:
+                continue
+            space = area.spaces.active
+            if space.region_3d.view_perspective == 'CAMERA':
+                return space, region
+            if fallback is None:
+                fallback = (space, region)
+    return fallback
+
+
+def _script_number(name):
+    head, sep, _ = name.partition("_")
+    return int(head) if sep and head.isdigit() else None
+
+
+def _script_files():
+    """Full paths of the .py files in the scripts folder, numbered prefixes first."""
+    folder = bpy.path.abspath(bpy.context.scene.vc_scripts_dir)
+    if not os.path.isdir(folder):
+        return []
+    paths = [os.path.join(folder, n) for n in os.listdir(folder) if n.endswith(".py")]
+    paths = [p for p in paths if os.path.isfile(p)]
+
+    def order(path):
+        name = os.path.basename(path)
+        number = _script_number(name)
+        return (number is None, number or 0, name)
+
+    return sorted(paths, key=order)
+
+
+def _script_label(path):
+    stem = os.path.basename(path)[:-3]
+    if _script_number(stem) is None:
+        return stem
+    return stem.partition("_")[2]
+
+
+# -- Host callbacks (VC1 names, no vcserver argument) -----------------------
+
+class VirtuCameraHost:
+    # Scene and playback
+
+    def get_playback_state(self):
         scene = bpy.context.scene
-        render = scene.render
-        area, region = self._find_3d_region()
-        if region is None:
-            return getattr(self, "last_rect", (0, 0, 640, 480))
+        return (float(scene.frame_current), float(scene.frame_start), float(scene.frame_end))
 
-        r3d = area.spaces.active.region_3d
+    def get_playback_fps(self):
+        render = bpy.context.scene.render
+        return render.fps / render.fps_base
 
-        zoom_value = r3d.view_camera_zoom
-        offset_value_x = r3d.view_camera_offset[0]
-        offset_value_y = r3d.view_camera_offset[1]
-        region_rect = (region.x, region.y, region.width, region.height)
-        camera_aspect_ratio = (
-            (render.resolution_x * render.pixel_aspect_x)
-            / (render.resolution_y * render.pixel_aspect_y)
-        )
+    def set_frame(self, frame):
+        bpy.context.scene.frame_set(int(round(frame)))
 
-        if self.camera_rect_changed(
-            offset_value_x, offset_value_y, zoom_value,
-            region_rect, camera_aspect_ratio,
-        ):
-            region_aspect_ratio = region.width / region.height
-            zoom_factor = self.view_zoom_factor(zoom_value)
-            width_factor = self.view_region_width_zoom_factor(
-                zoom_factor, region_aspect_ratio, camera_aspect_ratio,
-            )
-            width = int(region.width * width_factor)
-            height = int(width / camera_aspect_ratio)
-            offset_factor_x = self.view_offset_factor(
-                offset_value_x, zoom_factor,
-            )
-            offset_factor_y = self.view_offset_factor(
-                offset_value_y, zoom_factor,
-            )
-            x = int(
-                (region.width - width) * 0.5
-                + region.width * offset_factor_x
-            )
-            y = int(
-                (region.height - height) * 0.5
-                + region.height * offset_factor_y
-            )
-            width = min(width, region.width)
-            height = min(height, region.height)
-            x = min(max(x, 0), region.width - width)
-            y = min(max(y, 0), region.height - height)
-            self.last_rect = (x, y, width, height)
+    def set_playback_range(self, start, end):
+        scene = bpy.context.scene
+        scene.frame_start = int(round(start))
+        scene.frame_end = int(round(end))
 
-        return self.last_rect
+    def start_playback(self, forward):
+        screen = bpy.context.screen
+        if not screen.is_animation_playing:
+            bpy.ops.screen.animation_play(reverse=not forward, sync=True)
 
-    def get_script_files(self):
-        scripts_dir = bpy.context.scene.virtucamera.custom_scripts_dir
-        if not os.path.isdir(scripts_dir):
-            return []
-        dir_files = os.listdir(scripts_dir)
-        dir_files.sort()
-        valid_files = []
-        for file in dir_files:
-            if file.endswith(".py"):
-                filepath = os.path.join(scripts_dir, file)
-                if os.path.isdir(filepath):
-                    continue
-                valid_files.append(filepath)
-        return valid_files
+    def stop_playback(self):
+        if bpy.context.screen.is_animation_playing:
+            bpy.ops.screen.animation_cancel(restore_frame=False)
 
-    # Scene state
+    # Cameras
 
-    def get_playback_state(self, vcserver):
-        current_frame = bpy.context.scene.frame_current
-        range_start = bpy.context.scene.frame_start
-        range_end = bpy.context.scene.frame_end
-        return (current_frame, range_start, range_end)
+    def get_scene_cameras(self):
+        return [obj.name for obj in bpy.data.objects if _is_visible_camera(obj)]
 
-    def get_playback_fps(self, vcserver):
-        return bpy.context.scene.render.fps
+    def get_camera_exists(self, camera_name):
+        obj = bpy.data.objects.get(camera_name)
+        return obj is not None and _is_visible_camera(obj)
 
-    def set_frame(self, vcserver, frame):
-        bpy.context.scene.frame_current = int(frame)
+    def get_camera_has_keys(self, camera_name):
+        obj = bpy.data.objects[camera_name]
+        transform = any(fc.data_path in TRANSFORM_PATHS for fc in _iter_action_fcurves(obj))
+        flen = any(fc.data_path == "lens" for fc in _iter_action_fcurves(obj.data))
+        return (transform, flen)
 
-    def set_playback_range(self, vcserver, start, end):
-        bpy.context.scene.frame_start = int(start)
-        bpy.context.scene.frame_end = int(end)
-
-    def start_playback(self, vcserver, forward):
-        if not bpy.context.screen.is_animation_playing:
-            bpy.ops.screen.animation_play(reverse=(not forward), sync=True)
-
-    def stop_playback(self, vcserver):
-        bpy.ops.screen.animation_cancel(restore_frame=False)
-
-    # Camera
-
-    def get_scene_cameras(self, vcserver):
-        scene_cameras = []
-        for obj in bpy.data.objects:
-            if obj.type == "CAMERA" and obj.visible_get():
-                scene_cameras.append(obj)
-        return [camera.name for camera in scene_cameras]
-
-    def get_camera_exists(self, vcserver, camera_name):
-        if camera_name in bpy.data.objects:
-            return bpy.data.objects[camera_name].visible_get()
-        return False
-
-    def get_camera_has_keys(self, vcserver, camera_name):
-        camera = bpy.data.objects[camera_name]
-        transform_has_keys = False
-        if camera.animation_data and camera.animation_data.action:
-            for fcu in _iter_action_fcurves(camera.animation_data.action):
-                if fcu.data_path in self.TRANSFORM_CHANNELS:
-                    transform_has_keys = True
-                    break
-        focal_length_has_keys = False
-        if camera.data.animation_data and camera.data.animation_data.action:
-            for fcu in _iter_action_fcurves(camera.data.animation_data.action):
-                if fcu.data_path == "lens":
-                    focal_length_has_keys = True
-                    break
-        return (transform_has_keys, focal_length_has_keys)
-
-    def get_camera_focal_length(self, vcserver, camera_name):
+    def get_camera_focal_length(self, camera_name):
         return bpy.data.objects[camera_name].data.lens
 
-    def get_camera_transform(self, vcserver, camera_name):
-        camera_matrix = bpy.data.objects[camera_name].matrix_local.transposed()
-        camera_matrix @= self.B_TO_V_ROTATION_MAT
-        return (
-            *camera_matrix[0],
-            *camera_matrix[1],
-            *camera_matrix[2],
-            *camera_matrix[3],
-        )
+    def get_camera_transform(self, camera_name):
+        bpy.context.view_layer.update()  # matrix_local is cached until the depsgraph updates
+        return _matrix_to_wire(bpy.data.objects[camera_name].matrix_local)
 
-    def set_camera_focal_length(self, vcserver, camera_name, focal_length):
-        bpy.data.objects[camera_name].data.lens = focal_length
+    def set_camera_focal_length(self, camera_name, focal_length):
+        bpy.data.objects[camera_name].data.lens = float(focal_length)
 
-    def set_camera_transform(self, vcserver, camera_name, transform_matrix):
-        camera = bpy.data.objects[camera_name]
-        matrix = mathutils.Matrix((
-            transform_matrix[0:4],
-            transform_matrix[4:8],
-            transform_matrix[8:12],
-            transform_matrix[12:16],
-        ))
-        matrix @= self.V_TO_B_ROTATION_MAT
-        matrix.transpose()
-        camera.matrix_local = matrix
-        # Force redraw to prevent timer throttling
-        for window in bpy.context.window_manager.windows:
-            for area in window.screen.areas:
-                if area.type == 'VIEW_3D':
-                    area.tag_redraw()
+    def set_camera_transform(self, camera_name, transform_matrix):
+        bpy.data.objects[camera_name].matrix_local = _wire_to_matrix(transform_matrix)
 
-    def set_camera_flen_keys(
-        self, vcserver, camera_name, keyframes, focal_length_values,
-    ):
-        camera_data = bpy.data.objects[camera_name].data
-        for keyframe, focal_length in zip(keyframes, focal_length_values):
-            camera_data.lens = focal_length
-            camera_data.keyframe_insert('lens', frame=keyframe)
+    def set_camera_flen_keys(self, camera_name, keyframes, focal_length_values):
+        cam = bpy.data.objects[camera_name].data
+        fc = _fcurve(cam, "lens")
+        for frame, lens in zip(keyframes, focal_length_values):
+            _set_key(fc, frame, lens)
+        fc.update()
+        if focal_length_values:
+            cam.lens = float(focal_length_values[-1])
 
-    def set_camera_transform_keys(
-        self, vcserver, camera_name, keyframes, transform_matrix_values,
-    ):
-        camera = bpy.data.objects[camera_name]
-        for keyframe, matrix in zip(keyframes, transform_matrix_values):
-            self.set_camera_transform(vcserver, camera_name, matrix)
-            camera.keyframe_insert('location', frame=keyframe)
-            camera.keyframe_insert('rotation_euler', frame=keyframe)
-        bpy.ops.graph.virtucamera_euler_filter(object_name=camera_name)
+    def set_camera_transform_keys(self, camera_name, keyframes, transform_matrix_values):
+        obj = bpy.data.objects[camera_name]
+        order = _euler_order(obj)
+        loc_curves = [_fcurve(obj, "location", i) for i in range(3)]
+        rot_curves = [_fcurve(obj, "rotation_euler", i) for i in range(3)]
+        prev = obj.rotation_euler.copy()
+        pairs = sorted(zip(keyframes, transform_matrix_values), key=lambda pair: pair[0])
+        for frame, values in pairs:
+            matrix = _wire_to_matrix(values)
+            loc = matrix.to_translation()
+            # Compatible with the previous key, so no Graph Editor pass is needed.
+            prev = matrix.to_3x3().normalized().to_euler(order, prev)
+            for i in range(3):
+                _set_key(loc_curves[i], frame, loc[i])
+                _set_key(rot_curves[i], frame, prev[i])
+        for fc in loc_curves + rot_curves:
+            fc.update()
+        if pairs:
+            obj.location = loc
+            obj.rotation_euler = prev
 
-    def remove_camera_keys(self, vcserver, camera_name):
-        camera = bpy.data.objects[camera_name]
-        if camera.animation_data and camera.animation_data.action:
-            _remove_action_fcurves_by_path(camera.animation_data.action, self.TRANSFORM_CHANNELS)
-        if camera.data.animation_data and camera.data.animation_data.action:
-            _remove_action_fcurves_by_path(camera.data.animation_data.action, ("lens",))
+    def remove_camera_keys(self, camera_name):
+        obj = bpy.data.objects[camera_name]
+        _remove_action_fcurves_by_path(obj, lambda path: path in TRANSFORM_PATHS)
+        _remove_action_fcurves_by_path(obj.data, lambda path: path == "lens")
 
-    def create_new_camera(self, vcserver):
-        bpy.ops.object.camera_add(enter_editmode=False)
-        return bpy.context.scene.objects[-1].name
+    def create_new_camera(self):
+        scene = bpy.context.scene
+        cam = bpy.data.objects.new("Camera", bpy.data.cameras.new("Camera"))
+        cam.location = scene.cursor.location
+        scene.collection.objects.link(cam)
+        return cam.name
+
+    def look_through_camera(self, camera_name):
+        bpy.context.scene.camera = bpy.data.objects[camera_name]
+        view = _find_view3d()
+        if view is not None:
+            view[0].region_3d.view_perspective = 'CAMERA'
 
     # Viewport capture
 
-    def capture_will_start(self, vcserver):
-        (x, y, width, height) = self.get_view_camera_rect()
-        
-        # Align resolution to multiples of 16 to prevent stride mismatch
-        width = (width // 16) * 16
-        height = (height // 16) * 16
+    def capture_will_start(self):
+        global _stream
+        _stop_capture()
+        w, h = _stream_size(bpy.context.scene)
+        _stream = _Stream(w, h)
+        bpy.app.timers.register(_capture_tick, first_interval=_capture_period(), persistent=True)
 
-        # Allocate for the maximum possible capture area so we never need
-        # to reallocate during zoom/pan.
-        import mss as _mss_mod
-        with _mss_mod.mss() as _sct:
-            _mon = _sct.monitors[0]
-            max_w = ((_mon["width"] + 15) // 16) * 16
-            max_h = ((_mon["height"] + 15) // 16) * 16
-        shm_size = max_w * max_h * 4
-        self._shm_max_size = shm_size
-        if not hasattr(self, '_shm_counter'):
-            self._shm_counter = 0
-        self._shm_counter += 1
-        shm_name = f"vc_blender_{os.getpid()}_{self._shm_counter}"
-        try:
-            _old = SharedMemory(name=shm_name)
-            _old.close()
-            _old.unlink()
-        except Exception:
-            pass
-            
-        if self._shm is not None:
-            try:
-                self._shm.close()
-            except Exception:
-                pass
-        self._shm = SharedMemory(name=shm_name, create=True, size=shm_size)
-        self._shm_name = shm_name
-        vcserver.set_shm_name(shm_name)
-        vcserver.set_capture_resolution(width, height)
-        vcserver.set_capture_mode(
-            vcserver.CAPMODE_BUFFER, vcserver.CAPFORMAT_UBYTE_BGRA,
-        )
-        vcserver.set_vertical_flip(False)
+    def capture_did_end(self):
+        _stop_capture()
 
-        self._mss = _mss_mod.mss()
-        self._capture_width = width
-        self._capture_height = height
-        self._last_res_change_time = time.monotonic()
+    # Feedback: only redraws the UI
 
-        # Start the capture timer
-        if not hasattr(self, '_capture_timer_running') or not self._capture_timer_running:
-            self._capture_timer_running = True
-            bpy.app.timers.register(self._capture_timer, first_interval=0.0)
+    def client_connected(self, client_ip, client_port):
+        _tag_redraw()
 
-    def capture_did_end(self, vcserver):
-        self._capture_timer_running = False
-        if hasattr(self, '_mss') and self._mss is not None:
-            try:
-                self._mss.close()
-            except Exception:
-                pass
-            self._mss = None
-        if self._shm is not None:
-            try:
-                self._shm.close()
-            except Exception:
-                pass
-            try:
-                self._shm.unlink()
-            except Exception:
-                pass
-            self._shm = None
-            self._shm_name = None
+    def client_disconnected(self):
+        _tag_redraw()
 
-    def _capture_timer(self):
-        vcserver = _server
-        if vcserver is None or self._shm is None or not self._capture_timer_running:
-            self._capture_timer_running = False
-            return None  # Stop timer
-        if not vcserver.bridge_alive:
-            self._capture_timer_running = False
-            return None  # Bridge crashed — stop capture timer
+    def current_camera_changed(self, current_camera):
+        _tag_redraw()
 
-        try:
-            (x, y, width, height) = self.get_view_camera_rect()
-
-            # Align resolution to multiples of 16 to prevent stride mismatch
-            # in the C++ MJPEG encoder.
-            width = (width // 16) * 16
-            height = (height // 16) * 16
-
-            if width <= 0 or height <= 0:
-                return 1.0 / 30.0
-
-            # Handle resolution changes
-            if width != self._capture_width or height != self._capture_height:
-                # Debounce: only send resolution updates at most every 200ms.
-                now = time.monotonic()
-                if now - self._last_res_change_time >= 0.2:
-                    self._last_res_change_time = now
-                    self._capture_width = width
-                    self._capture_height = height
-                    vcserver.set_capture_resolution(width, height)
-                else:
-                    # Use the old (still-valid) resolution for this frame.
-                    width = self._capture_width
-                    height = self._capture_height
-
-            # Find the 3D viewport
-            area, region = self._find_3d_region()
-            if area is None or region is None:
-                return 1.0 / 30.0
-
-            # Get window client height
-            window = bpy.context.window
-            client_height = window.height
-
-            # Find Blender HWND using user32 APIs
-            hwnd = ctypes.windll.user32.GetActiveWindow()
-            if not hwnd:
-                hwnd = ctypes.windll.user32.GetForegroundWindow()
-            if not hwnd:
-                hwnd = ctypes.windll.user32.FindWindowW('GHOST_WindowClass', None)
-
-            # Calculate client-space top-left coordinates of the camera rect
-            # Blender y starts from the bottom of the window, while Windows coordinates
-            # start from the top of the client area.
-            client_x = region.x + x
-            client_y = client_height - (region.y + y + height)
-
-            # Translate client-space coordinates to absolute OS screen coordinates
-            if hwnd:
-                class POINT(ctypes.Structure):
-                    _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
-                pt = POINT(client_x, client_y)
-                ctypes.windll.user32.ClientToScreen(hwnd, ctypes.byref(pt))
-                screen_left = pt.x
-                screen_top = pt.y
-            else:
-                # Fallback estimate in case HWND could not be resolved
-                screen_left = client_x
-                screen_top = client_y
-
-            monitor = {
-                "left": screen_left,
-                "top": screen_top,
-                "width": width,
-                "height": height
-            }
-
-            # Grab screen region with mss
-            sct_img = self._mss.grab(monitor)
-            frame_size = width * height * 4
-            self._shm.buf[:frame_size] = sct_img.bgra
-
-        except Exception as e:
-            import traceback
-            traceback.print_exc()
-            pass
-
-        # Tag viewport for redraw to keep it alive
-        try:
-            area, _ = self._find_3d_region()
-            if area:
-                area.tag_redraw()
-        except Exception:
-            pass
-
-        return 1.0 / 30.0  # ~30 FPS capture rate
-
-    def get_capture_buffer(self, vcserver, camera_name):
-        return None
-
-    def look_through_camera(self, vcserver, camera_name):
-        camera = bpy.data.objects[camera_name]
-        bpy.context.scene.camera = camera
-        area, _ = self._find_3d_region()
-        if area:
-            area.spaces.active.region_3d.view_perspective = 'CAMERA'
-
-    # Feedback
-
-    def client_connected(self, vcserver, client_ip, client_port):
-        bpy.ops.view3d.virtucamera_redraw()
-
-    def client_disconnected(self, vcserver):
-        bpy.ops.view3d.virtucamera_redraw()
-
-    def current_camera_changed(self, vcserver, current_camera):
-        bpy.ops.view3d.virtucamera_redraw()
-
-    def server_did_stop(self, vcserver):
-        bpy.ops.view3d.virtucamera_redraw()
+    def server_did_stop(self):
+        _tag_redraw()
 
     # Custom scripts
 
-    def get_script_labels(self, vcserver):
-        script_files = self.get_script_files()
-        labels = []
-        for filepath in script_files:
-            filename = os.path.split(filepath)[1]
-            tokens = filename.split("_")
-            if len(tokens) > 1 and tokens[0].isdigit():
-                prefix_len = len(tokens[0])
-                label = filename[prefix_len + 1:-3]
-                labels.append(label)
-            else:
-                labels.append(filename[:-3])
-        return labels
+    def get_script_labels(self):
+        return [_script_label(path) for path in _script_files()]
 
-    def execute_script(self, vcserver, script_index, current_camera):
-        script_files = self.get_script_files()
-        if script_index >= len(script_files):
-            print(
-                "Can't execute script " + str(script_index + 1)
-                + ". Reason: Script doesn't exist"
-            )
+    def execute_script(self, script_index, current_camera):
+        files = _script_files()
+        if not 0 <= script_index < len(files):
+            print(f"VirtuCamera: can't run script {script_index + 1}: no such script")
             return False
+        path = files[script_index]
         try:
-            with open(script_files[script_index], "r") as script_file:
-                script_code = script_file.read()
-        except Exception:
-            traceback.print_exc()
-            print(
-                "Can't execute script " + str(script_index + 1)
-                + ". Reason: Unable to open file '"
-                + script_files[script_index] + "'"
-            )
-            return False
-        if script_code == '':
-            print(
-                "Can't execute script " + str(script_index + 1)
-                + ". Reason: Empty script"
-            )
-            return False
-        selcam_var_def = 'vc_selcam = "' + current_camera + '"\n'
-        script_code = selcam_var_def + script_code
-        try:
-            exec(script_code)
+            with open(path, encoding="utf-8") as f:
+                source = f.read()
+            if not source.strip():
+                print(f"VirtuCamera: can't run script {script_index + 1}: empty script")
+                return False
+            code = compile(source, path, "exec")
+            # VC1 ran scripts with its module globals; expose the common ones.
+            exec(code, {"__name__": "vc_script", "bpy": bpy, "mathutils": mathutils,
+                        "vc_selcam": current_camera})
             return True
         except Exception:
             traceback.print_exc()
             return False
 
 
-def timer_function():
+# -- Viewport stream --------------------------------------------------------
+
+class _Stream:
+    """One offscreen target and one flat readback buffer for a stream size."""
+
+    def __init__(self, w, h):
+        self.w, self.h = w, h
+        self.off = gpu.types.GPUOffScreen(w, h)
+        self.buf = gpu.types.Buffer('UBYTE', (w * h * 4,))
+
+    def free(self):
+        self.off.free()
+
+
+_stream = None
+
+
+def _stream_size(scene):
+    render = scene.render
+    aspect = (render.resolution_x * render.pixel_aspect_x) / (render.resolution_y * render.pixel_aspect_y)
+    long_edge = _prefs().stream_long_edge
+    w, h = (long_edge, long_edge / aspect) if aspect >= 1 else (long_edge * aspect, long_edge)
+    return max(2, 2 * round(w / 2)), max(2, 2 * round(h / 2))
+
+
+def _capture_camera(scene):
+    cam = bpy.data.objects.get(_server.current_camera or "")
+    if cam is None or cam.type != 'CAMERA':
+        cam = scene.camera
+    return cam if cam is not None and cam.type == 'CAMERA' else None
+
+
+def _render_stream():
+    global _stream
+    scene = bpy.context.scene
+    w, h = _stream_size(scene)
+    if (w, h) != (_stream.w, _stream.h):
+        _stream.free()
+        _stream = _Stream(w, h)
+    view = _find_view3d()
+    cam = _capture_camera(scene)
+    if view is None or cam is None:
+        return
+    space, region = view
+    stream = _stream
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+    with stream.off.bind():
+        fb = gpu.state.active_framebuffer_get()
+        fb.clear(color=(0.0, 0.0, 0.0, 1.0))
+        stream.off.draw_view3d(
+            scene, bpy.context.view_layer, space, region,
+            cam.matrix_world.inverted(), cam.calc_matrix_camera(depsgraph, x=w, y=h),
+            do_color_management=True)
+        fb.read_color(0, 0, w, h, 4, 0, 'UBYTE', data=stream.buf)
+    _server.submit_frame(np.frombuffer(stream.buf, np.uint8), w, h)
+
+
+def _capture_period():
+    return 1.0 / max(1.0, _server.capture_fps)
+
+
+def _capture_tick():
+    if _stream is None or _server is None or not _server.is_serving:
+        return None
+    start = time.perf_counter()
+    try:
+        _render_stream()
+    except Exception:
+        traceback.print_exc()
+    # Subtract the render time so the timer keeps the app's fps.
+    return max(0.0, _capture_period() - (time.perf_counter() - start))
+
+
+def _stop_capture():
+    global _stream
+    if bpy.app.timers.is_registered(_capture_tick):
+        bpy.app.timers.unregister(_capture_tick)
+    if _stream is not None:
+        _stream.free()
+        _stream = None
+
+
+# -- Server lifecycle and event pump ----------------------------------------
+
+_server = None
+_previews = None
+_qr_icon = 0
+_registered = False
+
+
+def _pump_events():
     if _server is None:
         return None
-    # Detect bridge crash and update UI state so the user knows
-    if not _server.bridge_alive:
-        _server._is_serving = False
-        _server._is_connected = False
-        _server._is_capturing = False
-        vcbase = _server._vcbase
-        if vcbase is not None:
-            vcbase._capture_timer_running = False
-        try:
-            bpy.ops.view3d.virtucamera_redraw()
-        except Exception:
-            pass
-        return None
-    _server.execute_pending_events()
+    try:
+        _server.execute_pending_events()
+    except Exception:
+        traceback.print_exc()
     if _server.is_serving:
         return 0.0
+    _stop_capture()
     return None
 
 
-def update_script_labels(self, context):
+def _set_qr(text):
+    global _qr_icon
+    qr = qrcode.QRCode(border=4)
+    qr.add_data(text)
+    qr.make(fit=True)
+    dark = np.array(qr.get_matrix(), dtype=bool)
+    scale = 4
+    gray = np.repeat(np.repeat(np.where(dark, 0.0, 1.0).astype(np.float32), scale, axis=0), scale, axis=1)
+    rgba = np.dstack([gray, gray, gray, np.ones_like(gray)])[::-1]  # Blender rows are bottom-up
+    _previews.clear()
+    preview = _previews.new("qr")
+    preview.image_size = (rgba.shape[1], rgba.shape[0])
+    preview.image_pixels_float = rgba.ravel().tolist()
+    _qr_icon = preview.icon_id
+
+
+def _shutdown():
+    global _server, _previews, _qr_icon
+    if _server is not None and _server.is_serving:
+        _server.stop_serving()
+    _server = None
+    if bpy.app.timers.is_registered(_pump_events):
+        bpy.app.timers.unregister(_pump_events)
+    _stop_capture()
+    if _previews is not None:
+        bpy.utils.previews.remove(_previews)
+        _previews = None
+    _qr_icon = 0
+
+
+def _scripts_changed(self, context):
     if _server is not None:
         _server.update_script_labels()
 
 
-class VirtuCameraState(bpy.types.PropertyGroup):
-    tcp_port: bpy.props.IntProperty(
-        name="Server TCP Port",
-        description=(
-            "TCP port to listen for VirtuCamera App connections"
-        ),
-        default=23354,
-        min=0,
-        max=65535,
-    )
-    custom_scripts_dir: bpy.props.StringProperty(
-        name="Scripts",
-        description=(
-            "Path to directory containing custom Python scripts "
-            "to be shown as buttons in the app.\n"
-            "If you prefix file names with a number, it will be "
-            "used to order the buttons (e.g.: 1_myscript.py)"
-        ),
-        default="",
-        subtype="DIR_PATH",
-        update=update_script_labels,
-    )
-
-
-class VIEW3D_OT_virtucamera_start(bpy.types.Operator):
-    bl_idname = "view3d.virtucamera_start"
+class VC_OT_start_serving(bpy.types.Operator):
+    bl_idname = "virtucamera.start_serving"
     bl_label = "Start Serving"
-    bl_description = (
-        "Start listening for incoming connections, "
-        "then you can scan the QR Code from the App"
-    )
+    bl_description = "Listen for VirtuCamera 1 connections, then scan the QR code in the app"
 
     @classmethod
     def poll(cls, context):
-        return _server is not None and not _server.is_serving
+        return _server is None or not _server.is_serving
 
     def execute(self, context):
+        global _server
         if _server is None:
+            from .vc_server import VCServer
+            _server = VCServer(VirtuCameraHost(), plugin_version=PLUGIN_VERSION, platform="Blender")
+        port = context.scene.vc_port
+        if not _server.start_serving(port):
+            self.report({'ERROR'}, f"VirtuCamera: could not listen on port {port}")
             return {'CANCELLED'}
-        # Auto-recover from a bridge crash without requiring a Blender restart
-        if not _server.bridge_alive:
-            vcbase = _server._vcbase
-            if vcbase is not None:
-                try:
-                    vcbase.capture_did_end(_server)
-                except Exception:
-                    pass
-            try:
-                _server.restart_bridge()
-            except Exception as e:
-                self.report({'ERROR'}, f"VirtuCamera bridge recovery failed: {e}")
-                return {'CANCELLED'}
-        state = context.scene.virtucamera
-        prefs = context.preferences.addons[__package__].preferences
-        _server._python_executable = prefs.python_39_path or None
-        _server.start_serving(state.tcp_port)
-        if not _server.is_serving:
-            return {'FINISHED'}
-        bpy.app.timers.register(timer_function)
-        file_path = os.path.join(
-            os.path.dirname(__file__), 'virtucamera_qr_img.png',
-        )
-        _server.write_qr_image_png(file_path, 3)
-        global _custom_icons
-        if _custom_icons is None:
-            _custom_icons = bpy.utils.previews.new()
-        _custom_icons.clear()
-        _custom_icons.load('qr_image', file_path, 'IMAGE')
+        _set_qr(_server.qr_string())
+        if not bpy.app.timers.is_registered(_pump_events):
+            bpy.app.timers.register(_pump_events, persistent=True)
+        _tag_redraw()
         return {'FINISHED'}
 
 
-class VIEW3D_OT_virtucamera_stop(bpy.types.Operator):
-    bl_idname = "view3d.virtucamera_stop"
+class VC_OT_stop_serving(bpy.types.Operator):
+    bl_idname = "virtucamera.stop_serving"
     bl_label = "Stop Serving"
-    bl_description = (
-        "Stop listening for incoming connections from VirtuCamera App"
-    )
+    bl_description = "Stop listening for VirtuCamera 1 connections"
 
     @classmethod
     def poll(cls, context):
         return _server is not None and _server.is_serving
 
     def execute(self, context):
-        if _server is None:
-            return {'CANCELLED'}
         _server.stop_serving()
+        _stop_capture()
+        _tag_redraw()
         return {'FINISHED'}
 
 
-class VIEW3D_OT_virtucamera_redraw(bpy.types.Operator):
-    bl_idname = "view3d.virtucamera_redraw"
-    bl_label = "Redraw UI"
-
-    def execute(self, context):
-        for window in context.window_manager.windows:
-            screen = window.screen
-            for area in screen.areas:
-                if area.type == 'VIEW_3D':
-                    area.tag_redraw()
-        return {'FINISHED'}
-
-
-class VIEW3D_OT_virtucamera_reinit(bpy.types.Operator):
-    bl_idname = "view3d.virtucamera_reinit"
-    bl_label = "Retry Initialization"
-
-    def execute(self, context):
-        global _init_attempts
-        _init_attempts = 0
-        _ensure_init_timer()
-        return {'FINISHED'}
-
-
-class GRAPH_OT_virtucamera_euler_filter(bpy.types.Operator):
-    bl_idname = "graph.virtucamera_euler_filter"
-    bl_label = "Euler Filter"
-
-    object_name: bpy.props.StringProperty(name="Object Name")
-
-    def execute(self, context):
-        camera = bpy.data.objects[self.object_name]
-        prev_cam_select = camera.select_get()
-        camera.select_set(True)
-
-        for area in context.screen.areas:
-            if area.type == 'GRAPH_EDITOR':
-                fcurves = [
-                    fcu for fcu in _iter_action_fcurves(camera.animation_data.action)
-                    if fcu.data_path == 'rotation_euler'
-                ]
-                with context.temp_override(
-                    area=area,
-                    selected_visible_fcurves=fcurves,
-                ):
-                    bpy.ops.graph.euler_filter()
-                break
-
-        camera.select_set(prev_cam_select)
-        return {'FINISHED'}
-
-
-class VIEW3D_PT_virtucamera_main(bpy.types.Panel):
-    bl_idname = "VIEW3D_PT_virtucamera_main"
-    bl_label = 'VirtuCamera'
+class VIEW3D_PT_virtucamera(bpy.types.Panel):
+    bl_label = "VirtuCamera"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
-    bl_category = 'VirtuCamera'
+    bl_category = "VirtuCamera"
 
     def draw(self, context):
-        if _server is None:
-            layout = self.layout
-            layout.label(text="Initializing...")
-            layout.operator(
-                "view3d.virtucamera_reinit", text="Retry Initialization",
-            )
-            return
-        state = context.scene.virtucamera
         layout = self.layout
-        column = layout.column()
-        column.label(
-            text='v%d.%d.%d (server v%d.%d.%d)'
-            % (plugin_version + _server.SERVER_VERSION),
-        )
+        scene = context.scene
+        serving = _server is not None and _server.is_serving
+        connected = serving and _server.is_connected
+        layout.label(text="v" + ".".join(map(str, PLUGIN_VERSION)))
         row = layout.row()
-        if _server.is_serving:
-            row.enabled = False
-        row.prop(state, "tcp_port")
-        layout.operator('view3d.virtucamera_start')
-        layout.operator('view3d.virtucamera_stop')
-        if (
-            _server.is_serving
-            and not _server.is_connected
-            and _custom_icons
-            and 'qr_image' in _custom_icons
-        ):
-            column = layout.column()
-            column.label(text='Server Ready')
-            column.label(text='Connect through the App')
-            layout.template_icon(
-                icon_value=_custom_icons['qr_image'].icon_id, scale=6,
-            )
-        elif _server.is_connected:
-            column = layout.column()
-            column.label(
-                text='Connected: ' + _server.client_ip, icon='CHECKMARK',
-            )
+        row.enabled = not serving
+        row.prop(scene, "vc_port")
+        row = layout.row(align=True)
+        row.operator(VC_OT_start_serving.bl_idname, icon='PLAY')
+        row.operator(VC_OT_stop_serving.bl_idname, icon='PAUSE')
+        if serving and not connected and _qr_icon:
+            col = layout.column(align=True)
+            col.label(text="Server Ready")
+            col.label(text="Connect through the App")
+            layout.template_icon(icon_value=_qr_icon, scale=6.0)
+        elif connected:
+            layout.label(text=f"Connected: {_server.client_ip}", icon='CHECKMARK')
             if _server.current_camera:
-                column.label(
-                    text=_server.current_camera, icon='VIEW_CAMERA',
-                )
-        column = layout.column()
-        column.separator()
-        column.prop(state, "custom_scripts_dir")
+                layout.label(text=_server.current_camera, icon='VIEW_CAMERA')
+        layout.separator()
+        layout.prop(scene, "vc_scripts_dir")
 
 
-class VIRTUCAMERA_AddonPreferences(bpy.types.AddonPreferences):
+class VirtuCameraPreferences(bpy.types.AddonPreferences):
     bl_idname = __package__
 
-    python_39_path: bpy.props.StringProperty(
-        name="Python 3.9 Executable",
-        description=(
-            "Path to the Python 3.9 executable required by the "
-            "VirtuCamera bridge server"
-        ),
-        default="",
-        subtype="FILE_PATH",
+    stream_long_edge: bpy.props.IntProperty(
+        name="Stream long edge",
+        description="Long edge of the streamed camera view in pixels (the short edge follows the render aspect). "
+                    "Values above 720 were never sent by the original VirtuCamera pipeline and may strain older phones",
+        default=720, min=256, max=1920,
     )
 
     def draw(self, context):
-        layout = self.layout
-        layout.prop(self, "python_39_path")
+        self.layout.prop(self, "stream_long_edge")
 
 
-_classes = (
-    VirtuCameraState,
-    VIEW3D_OT_virtucamera_start,
-    VIEW3D_OT_virtucamera_stop,
-    VIEW3D_OT_virtucamera_redraw,
-    VIEW3D_OT_virtucamera_reinit,
-    GRAPH_OT_virtucamera_euler_filter,
-    VIEW3D_PT_virtucamera_main,
-    VIRTUCAMERA_AddonPreferences,
-)
-
-
-_init_attempts = 0
-_server = None
-_custom_icons = None
-
-
-def _ensure_init_timer():
-    """Register the init timer if not already running."""
-    if not bpy.app.timers.is_registered(_deferred_init):
-        bpy.app.timers.register(_deferred_init, first_interval=0.1)
-
-
-def _deferred_init():
-    """Initialize VCServer after Blender's context is fully available."""
-    global _init_attempts, _server, _custom_icons
-    if _server is not None:
-        return None  # already initialized
-    _init_attempts += 1
-    try:
-        _server = VCServer(
-            platform="Blender",
-            plugin_version=plugin_version,
-            event_mode=VCServer.EVENTMODE_PULL,
-            vcbase=VirtuCameraBlender(),
-        )
-    except Exception as e:
-        _server = None
-        print(f"[VirtuCamera] Init attempt {_init_attempts} failed: {e}")
-        if _init_attempts < 30:
-            return 2.0  # retry in 2 seconds
-        print("[VirtuCamera] Giving up after 30 attempts. "
-              "Check Python 3.9 path in addon preferences.")
-        return None
-    _custom_icons = bpy.utils.previews.new()
-    print("[VirtuCamera] Initialized successfully.")
-    return None
+_classes = (VirtuCameraPreferences, VC_OT_start_serving, VC_OT_stop_serving, VIEW3D_PT_virtucamera)
 
 
 def register():
+    global _registered, _previews
+    if _registered:
+        return
     for cls in _classes:
         bpy.utils.register_class(cls)
-    bpy.types.Scene.virtucamera = bpy.props.PointerProperty(
-        type=VirtuCameraState,
+    bpy.types.Scene.vc_port = bpy.props.IntProperty(
+        name="Port", description="TCP port to listen on for the VirtuCamera 1 app",
+        default=23354, min=0, max=65535,
     )
-    _ensure_init_timer()
+    bpy.types.Scene.vc_scripts_dir = bpy.props.StringProperty(
+        name="Scripts",
+        description="Folder of .py scripts shown as buttons in the app. Prefix a file name with a number to set its order (e.g. 1_myscript.py)",
+        subtype='DIR_PATH', default="", update=_scripts_changed,
+    )
+    _previews = bpy.utils.previews.new()
+    _registered = True
 
 
 def unregister():
-    global _server, _custom_icons
-    if _server is not None and _server.is_serving:
-        _server.stop_serving()
-    _server = None
-    if _custom_icons is not None:
-        bpy.utils.previews.remove(_custom_icons)
-    _custom_icons = None
-    try:
-        del bpy.types.Scene.virtucamera
-    except Exception:
-        pass
+    global _registered
+    if not _registered:
+        return
+    _shutdown()
+    del bpy.types.Scene.vc_scripts_dir
+    del bpy.types.Scene.vc_port
     for cls in reversed(_classes):
         bpy.utils.unregister_class(cls)
+    _registered = False
